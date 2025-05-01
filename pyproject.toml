@@ -1,0 +1,19 @@
+[project]
+name = "ai-agents"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "bwithai",email = "sanaullah41821@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai (==1.76.2)",
+    "pymongo (==4.12.1)",
+    "python-dotenv (==1.1.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
