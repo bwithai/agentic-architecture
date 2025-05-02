@@ -47,44 +47,37 @@ class ResponseFormattingAgent(BaseAgent):
             temperature=config.openai.temperature
         )
         
+        # Create simple system prompt with no JSON examples
+        system_prompt = (
+            "You are an expert at converting database query results into natural, "
+            "human-friendly responses. Your task is to take the original user query "
+            "and the raw results from a MongoDB query, and create a helpful, "
+            "well-formatted response.\n\n"
+            "Guidelines:\n"
+            "1. Summarize the key information from the results\n"
+            "2. Format the data in a readable way (using bullet points, tables, etc.)\n"
+            "3. Highlight important patterns or insights\n"
+            "4. Be conversational and friendly\n"
+            "5. If the results are empty, explain this clearly\n"
+            "6. If there was an error, explain it in simple terms\n\n"
+            "Make your response complete, well-formatted, and helpful."
+        )
+        
+        # Simple human prompt with variables
+        human_prompt = (
+            "Original Query: {original_query}\n\n"
+            "MongoDB Query: {mongodb_query}\n\n"
+            "Is Multi-Collection: {is_multi_collection}\n\n"
+            "Results: {result}\n\n"
+            "Count: {count}\n"
+            "Status: {status}\n"
+            "Error: {error}\n\n"
+            "Create a helpful response to the original query:"
+        )
+        
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an expert at converting database query results into natural, human-friendly responses.
-
-Your task is to take the original user query and the raw results from a MongoDB query, and create a helpful, well-formatted response.
-
-Guidelines:
-1. Summarize the key information from the results
-2. Format the data in a readable way (using bullet points, tables, etc. when appropriate)
-3. Highlight important patterns or insights
-4. Be conversational and friendly
-5. If the results are empty, explain this clearly
-6. If there was an error, explain it in simple terms
-
-Here's the data you'll receive:
-- original_query: The user's original natural language query
-- mongodb_query: The structured MongoDB query that was executed
-- result: The raw results from MongoDB
-- count: The number of results
-- status: Whether the query was successful or had an error
-- error: Any error message (if status is "error")
-
-Respond with a complete, well-formatted, and helpful message that directly answers the user's original query.
-"""),
-            ("human", """
-Original Query: {original_query}
-
-MongoDB Query: 
-{mongodb_query}
-
-Results: 
-{result}
-
-Count: {count}
-Status: {status}
-Error: {error}
-
-Create a helpful response to the original query:
-""")
+            ("system", system_prompt),
+            ("human", human_prompt)
         ])
     
     async def run(self, inputs: AgentInput) -> AgentOutput:
@@ -102,17 +95,25 @@ Create a helpful response to the original query:
         # Extract data from context
         original_query = inputs.query
         mongodb_query = inputs.context.get("mongodb_query", {})
-        result = inputs.context.get("result", [])
-        count = inputs.context.get("count", 0)
         status = inputs.context.get("status", "unknown")
         error = inputs.context.get("error", None)
         
+        # Check if we have multi-collection results
+        is_multi_collection = False
+        
+        if "multi_collection_results" in inputs.context:
+            is_multi_collection = True
+            result = inputs.context.get("multi_collection_results", {})
+            count = inputs.context.get("count", 0)
+        else:
+            result = inputs.context.get("result", [])
+            count = inputs.context.get("count", 0)
+        
         # Format the data for the prompt using custom encoder to handle datetime objects
         mongodb_query_str = json.dumps(mongodb_query, indent=2)
-        
-        # Use custom encoder to handle datetime objects in MongoDB results
         result_str = json.dumps(result, indent=2, cls=MongoJSONEncoder)
         
+        # Invoke the chain
         chain = self.prompt | self.llm
         llm_response = await chain.ainvoke({
             "original_query": original_query,
@@ -120,7 +121,8 @@ Create a helpful response to the original query:
             "result": result_str,
             "count": count,
             "status": status,
-            "error": error or "None"
+            "error": error or "None",
+            "is_multi_collection": str(is_multi_collection)  # Convert to string to avoid any parsing issues
         })
         
         formatted_response = llm_response.content
