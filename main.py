@@ -20,6 +20,17 @@ async def run_agent():
     
     # Create the agent graph
     agent_graph = create_agent_graph()
+
+    from IPython.display import Image, display
+
+    try:
+        # Save the graph visualization to a file
+        graph_image = agent_graph.get_graph().draw_mermaid_png()
+        with open("agent_graph.png", "wb") as f:
+            f.write(graph_image)
+    except Exception:
+        # This requires some extra dependencies and is optional
+        pass
     
     # Example query
     user_query = "Show me all documents from the users collection"
