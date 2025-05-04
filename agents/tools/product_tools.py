@@ -143,7 +143,9 @@ def extract_product_id_from_query(query: str) -> Optional[str]:
         r"product[:\s]+([a-zA-Z0-9-_]+)",
         r"id[:\s]+([a-zA-Z0-9-_]+)",
         r"item[:\s]+([a-zA-Z0-9-_]+)",
-        r"sku[:\s]+([a-zA-Z0-9-_]+)"
+        r"sku[:\s]+([a-zA-Z0-9-_]+)",
+        r"mongodb\s+id[:\s]+([a-zA-Z0-9-_]+)",
+        r"__id[:\s]+([a-zA-Z0-9-_]+)"
     ]
     
     for pattern in patterns:

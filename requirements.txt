@@ -1,0 +1,6 @@
+langchain>=0.1.0
+langchain-openai>=0.0.3
+langgraph>=0.0.20
+pymongo>=4.5.0
+pydantic>=2.4.2
+langchain-core>=0.1.7 
