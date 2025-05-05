@@ -36,7 +36,7 @@ async def classify_intent(state: MessagesState) -> MessagesState:
     Args:
         state (MessagesState): The current state with message history
     Returns:
-        MessagesState: The updated state
+        MessagesState: The updated state with language info and intent classification
     """
     # Extract the latest user message
     user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
@@ -53,25 +53,24 @@ async def classify_intent(state: MessagesState) -> MessagesState:
     
     # Add the intent classification to the state as a 'tool' message
     classification = output.data.get("classification", {})
-    # if the enten_type is not Business Inquiry, then it is GENERAL_CONVERSATION
-    intent_type = classification.get("intent_type", "GENERAL_CONVERSATION")
-
-    # Store the language information in state
+    intent_type = classification.get("intent_type", "BUSINESS_INQUIRY")
+    
+    # Store the language information in a tool message for downstream nodes
     language_info = output.data.get("language_info", {})
-    if "query_result" not in state:
-        state["query_result"] = {}
-    state["query_result"]["language_info"] = language_info
     
     # Log language detection
     if language_info:
         lang_name = language_info.get("language_name", "Unknown")
         is_eng = language_info.get("is_english", True)
-        state["messages"].append(
-            ToolMessage(
-                content=f"Detected language: {lang_name} (Translation needed: {not is_eng})",
-                tool_call_id="language_detector"
-            )
+        
+        # Store language info in a tool message
+        language_info_message = ToolMessage(
+            content=f"Detected language: {lang_name} (Translation needed: {not is_eng})",
+            tool_call_id="language_detector"
         )
+        # Add additional metadata to the message
+        language_info_message.additional_kwargs = {"language_info": language_info}
+        state["messages"].append(language_info_message)
     
     state["messages"].append(
         ToolMessage(
@@ -81,6 +80,7 @@ async def classify_intent(state: MessagesState) -> MessagesState:
     )
     
     # If it's general conversation, add the response directly
+    # (The response is already translated back to the original language by the agent)
     if intent_type == "GENERAL_CONVERSATION" and output.response:
         state["messages"].append(
             AIMessage(content=output.response)
@@ -111,8 +111,12 @@ async def understand_query(state: MessagesState) -> MessagesState:
     
     latest_message = user_messages[-1].content
     
-    # Get language information from previous node
-    language_info = state.get("query_result", {}).get("language_info", {})
+    # Get language information from language_detector message
+    language_info = {}
+    for msg in state["messages"]:
+        if isinstance(msg, ToolMessage) and msg.tool_call_id == "language_detector":
+            language_info = msg.additional_kwargs.get("language_info", {})
+            break
     
     # If the language is not English and we have a translated query, use it
     if language_info and not language_info.get("is_english", True):
@@ -126,36 +130,29 @@ async def understand_query(state: MessagesState) -> MessagesState:
     
     output = await agent.run(agent_input)
     
-    # Store results in state for the format_response node
-    if "query_result" not in state:
-        state["query_result"] = {}
-        
-    state["query_result"].update({
+    # Store results in a tool message for format_response node
+    query_result = {
         "original_query": latest_message,
         "status": output.status,
         "error": output.error
-    })
-    
-    # Preserve language information
-    if language_info and "language_info" not in state["query_result"]:
-        state["query_result"]["language_info"] = language_info
+    }
     
     if output.status == "error":
-        state["messages"].append(
-            ToolMessage(
-                content=f"Error: {output.error}",
-                tool_call_id="query_understanding"
-            )
+        error_message = ToolMessage(
+            content=f"Error: {output.error}",
+            tool_call_id="query_understanding"
         )
+        # Store additional metadata in the message
+        error_message.additional_kwargs = {"query_result": query_result, "language_info": language_info}
+        state["messages"].append(error_message)
         return state
     
-    # Update the state
+    # Update the query result
     mongodb_query = output.data.get("mongodb_query")
     explanation = output.data.get("explanation", "")
     
-    # Store the mongodb query in state for the format_response node
-    state["query_result"]["mongodb_query"] = mongodb_query
-    state["query_result"]["explanation"] = explanation
+    query_result["mongodb_query"] = mongodb_query
+    query_result["explanation"] = explanation
     
     # Convert to proper JSON string if it's a dict
     if isinstance(mongodb_query, dict):
@@ -163,12 +160,13 @@ async def understand_query(state: MessagesState) -> MessagesState:
     else:
         mongodb_query_str = str(mongodb_query)
     
-    state["messages"].append(
-        ToolMessage(
-            content=f"MongoDB query: {mongodb_query_str}\nExplanation: {explanation}",
-            tool_call_id="query_understanding"
-        )
+    query_message = ToolMessage(
+        content=f"MongoDB query: {mongodb_query_str}\nExplanation: {explanation}",
+        tool_call_id="query_understanding"
     )
+    # Store query result in the message
+    query_message.additional_kwargs = {"query_result": query_result, "language_info": language_info}
+    state["messages"].append(query_message)
     
     # Extract limits from the user query
     import re
@@ -211,15 +209,6 @@ async def understand_query(state: MessagesState) -> MessagesState:
         numeric_limit_match = re.search(r'(?:top|first|latest|recent)\s+(\d+)', query_to_process.lower())
         default_limit = int(numeric_limit_match.group(1)) if numeric_limit_match else 5
         
-        # If we need to query both users and products but the agent didn't generate both queries
-        if "users" in limits and "products" in limits and len(collections_to_query) < 2:
-            # Check if we need to add a products query
-            if not any(q.get("collection") == "products" for q in collections_to_query):
-                collections_to_query.append({"collection": "products", "query": {}})
-            # Check if we need to add a users query
-            if not any(q.get("collection") == "users" for q in collections_to_query):
-                collections_to_query.append({"collection": "users", "query": {}})
-                
         # If no specific collections were identified but we mentioned users or products
         if not collections_to_query:
             if "user" in query_to_process.lower() or "customer" in query_to_process.lower():
@@ -266,12 +255,11 @@ async def understand_query(state: MessagesState) -> MessagesState:
                     
                     all_results[collection_name] = results
                     
-                    state["messages"].append(
-                        ToolMessage(
-                            content=f"Query executed successfully. Found {len(results)} results in collection '{collection_name}'.",
-                            tool_call_id=f"mongodb_agent_{collection_name}"
-                        )
+                    db_message = ToolMessage(
+                        content=f"Query executed successfully. Found {len(results)} results in collection '{collection_name}'.",
+                        tool_call_id=f"mongodb_agent_{collection_name}"
                     )
+                    state["messages"].append(db_message)
                 else:
                     # Collection doesn't exist
                     all_results[collection_name] = []
@@ -291,11 +279,23 @@ async def understand_query(state: MessagesState) -> MessagesState:
                 )
                 all_results[collection_name] = []
         
-        # Store results in state for the format_response node
-        state["query_result"]["multi_collection_results"] = all_results
-        state["query_result"]["count"] = sum(len(results) for results in all_results.values())
-        state["query_result"]["database_name"] = db_name
-        state["query_result"]["collections_queried"] = list(all_results.keys())
+        # Update query result with data
+        query_result["multi_collection_results"] = all_results
+        query_result["count"] = sum(len(results) for results in all_results.values())
+        query_result["database_name"] = db_name
+        query_result["collections_queried"] = list(all_results.keys())
+        
+        # Store final results in a tool message
+        result_message = ToolMessage(
+            content=f"Query results retrieved from {len(all_results)} collections with {query_result['count']} total documents.",
+            tool_call_id="mongodb_results"
+        )
+        # Store the full results in additional_kwargs
+        result_message.additional_kwargs = {
+            "query_result": query_result, 
+            "language_info": language_info
+        }
+        state["messages"].append(result_message)
         
         # Close MongoDB connection
         client.close()
@@ -303,17 +303,20 @@ async def understand_query(state: MessagesState) -> MessagesState:
     except Exception as e:
         # Handle errors
         error_msg = str(e)
-        state["messages"].append(
-            ToolMessage(
-                content=f"Error executing MongoDB query: {error_msg}",
-                tool_call_id="mongodb_agent"
-            )
+        error_message = ToolMessage(
+            content=f"Error executing MongoDB query: {error_msg}",
+            tool_call_id="mongodb_agent"
         )
         
-        state["query_result"]["status"] = "error"
-        state["query_result"]["error"] = error_msg
-        state["query_result"]["result"] = []
-        state["query_result"]["count"] = 0
+        # Update query result with error info
+        query_result["status"] = "error"
+        query_result["error"] = error_msg
+        query_result["result"] = []
+        query_result["count"] = 0
+        
+        # Store error details in the message
+        error_message.additional_kwargs = {"query_result": query_result, "language_info": language_info}
+        state["messages"].append(error_message)
     
     return state
 
@@ -325,19 +328,31 @@ async def format_response(state: MessagesState) -> MessagesState:
     Args:
         state (MessagesState): The current state
     Returns:
-        MessagesState: The updated state
+        MessagesState: The updated state with formatted response
     """
-    # Get query results from state
-    query_result = state.get("query_result", {})
-    original_query = query_result.get("original_query", "")
+    # Extract the latest user message
+    user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
+    original_query = user_messages[-1].content if user_messages else ""
+    
+    # Get query_result and language_info from the most recent result message
+    query_result = {}
+    language_info = {}
+    
+    # Find the most recent message with query results
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, ToolMessage) and "query_result" in msg.additional_kwargs:
+            query_result = msg.additional_kwargs.get("query_result", {})
+            language_info = msg.additional_kwargs.get("language_info", {})
+            break
     
     # Create and run the response formatting agent
     formatter_agent = ResponseFormattingAgent(verbose=config.agent.verbose)
     formatter_input = AgentInput(
         query=original_query,
-        context=query_result
+        context={**query_result, "language_info": language_info}
     )
     
+    # The formatter agent will handle translation back to the original language
     formatter_output = await formatter_agent.run(formatter_input)
     
     # Add the formatted response to the state
