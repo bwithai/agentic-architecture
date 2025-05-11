@@ -1,364 +1,410 @@
-"""
-Streamlit app for AI agents with MongoDB integration.
-This app provides a user-friendly interface to query MongoDB using natural language with multi-language support.
-"""
-
 import os
+import json
 import asyncio
 import streamlit as st
-import json
-from datetime import datetime
+import time
 from dotenv import load_dotenv
-from core.graph.agent_graph import create_agent_graph
-from config.config import config
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 
-# Load environment variables
-load_dotenv()
-
-# Set page configuration
+# Page config MUST be the first st command
 st.set_page_config(
-    page_title="AI MongoDB Assistant",
+    page_title="MongoDB AI Assistant",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better appearance
+# Initialize session state variables
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "db_client" not in st.session_state:
+    st.session_state.db_client = None
+    st.session_state.tool_registry = None
+    st.session_state.chat_bot = None
+    st.session_state.is_initialized = False
+    st.session_state.has_test_data = False
+    st.session_state.debug_logs = []
+    
+if "show_debug" not in st.session_state:
+    st.session_state.show_debug = False
+
+from mongodb.client import MongoDBClient
+from agents.tools.registry import ToolRegistry
+from main import MongoDBChatBot
+
+# Load environment variables
+load_dotenv()
+
+# MongoDB connection string and OpenAI API key
+mongodb_url = os.environ.get("MONGODB_URI", "mongodb://localhost:27017/test")
+openai_api_key = os.environ.get("OPENAI_API_KEY")
+
+if not openai_api_key:
+    st.error("OPENAI_API_KEY environment variable not set. Please add it to your .env file.")
+    st.stop()
+
+# Custom CSS for better ChatGPT-like styling
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #4B67A8;
-        text-align: center;
-        margin-bottom: 30px;
-    }
-    .sub-header {
-        font-size: 1.5rem;
-        color: #4B67A8;
-        margin-top: 20px;
-    }
-    .stTextInput > div > div > input {
-        font-size: 1.1rem;
-        padding: 15px;
-    }
-    .response-area {
-        background-color: #f8f9fa;
-        padding: 20px;
-        border-radius: 5px;
-        border-left: 5px solid #4B67A8;
-    }
-    .debug-area {
-        background-color: #f0f0f0;
-        padding: 15px;
-        border-radius: 5px;
-        font-family: monospace;
-        margin-top: 20px;
-    }
-    .tool-message {
-        background-color: #e8f4f8;
-        padding: 10px;
-        border-radius: 5px;
-        font-family: monospace;
-        font-size: 0.9rem;
-        margin-top: 5px;
-        margin-bottom: 5px;
-        border-left: 3px solid #4B9CD3;
-    }
-    .language-info {
-        background-color: #f9f0ff;
-        padding: 10px;
-        border-radius: 5px;
-        font-size: 0.9rem;
-        margin-top: 5px;
-        margin-bottom: 5px;
-        border-left: 3px solid #9966CC;
-    }
-    .query-container {
-        background-color: #f8f9fa;
-        padding: 20px;
+    .stChatMessage {
+        padding: 1rem;
         border-radius: 10px;
-        margin-top: 20px;
-        border: 1px solid #e0e0e0;
+        margin-bottom: 1rem;
     }
-    .stButton > button {
-        background-color: #4B67A8;
-        color: white;
-        font-weight: bold;
-        padding: 0.5rem 2rem;
-        font-size: 1.1rem;
+    .stChatMessage[data-testid="user-message"] {
+        background-color: #f7f7f8;
     }
-    .hint-text {
-        color: #666;
-        font-size: 0.9rem;
+    .stChatMessage[data-testid="assistant-message"] {
+        background-color: #f0f7fb;
+    }
+    .mongo-json {
+        background-color: #f0f0f0;
+        padding: 1rem;
+        border-radius: 5px;
+        font-family: monospace;
+        overflow-x: auto;
+    }
+    .thinking {
+        color: #6c757d;
         font-style: italic;
-        margin-bottom: 10px;
+        background-color: #f8f9fa;
+        padding: 0.5rem;
+        border-radius: 5px;
+        margin: 0.5rem 0;
+        border-left: 3px solid #17a2b8;
+    }
+    .thinking-message {
+        background-color: #f8f9fa;
+        border-left: 3px solid #17a2b8;
+        font-style: italic;
+        color: #6c757d;
+    }
+    .tool-call {
+        background-color: #e6f3e6;
+        padding: 0.5rem;
+        border-radius: 5px;
+        margin: 0.5rem 0;
+        font-family: monospace;
+        border-left: 3px solid #28a745;
+    }
+    .stButton button {
+        width: 100%;
+    }
+    .debug-panel {
+        background-color: #f6f6f6;
+        border-radius: 5px;
+        padding: 10px;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+    footer {
+        visibility: hidden;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state variables
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
-if 'need_rerun' not in st.session_state:
-    st.session_state.need_rerun = False
-if 'last_query' not in st.session_state:
-    st.session_state.last_query = None
-if 'show_tool_messages' not in st.session_state:
-    st.session_state.show_tool_messages = False
-if 'language_preference' not in st.session_state:
-    st.session_state.language_preference = "auto"
-
-# Custom JSON encoder for MongoDB types
-class MongoJSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        return super().default(obj)
-
-# Function to run the agent asynchronously
-async def run_agent_async(query):
-    """Run the agent with the given query asynchronously."""
-    # Create the agent graph
-    agent_graph = create_agent_graph()
-    
-    # Initialize message state with the user query using LangChain message objects
-    initial_state = {
-        "messages": [
-            HumanMessage(content=query)
-        ]
-    }
-    
-    # Run the agent with the query
-    return await agent_graph.ainvoke(initial_state)
-
-# Function to bridge async and sync for Streamlit
-def run_agent(query):
-    """Run the agent in a way compatible with Streamlit's synchronous model."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(run_agent_async(query))
-    finally:
-        loop.close()
-
-# Function to process query and trigger rerun
-def process_query(query):
-    # Store query for processing
-    st.session_state.last_query = query
-    # Set flag to indicate we need to rerun
-    st.session_state.need_rerun = True
-    # Rerun to process the query
-    st.rerun()
-
-# Extract the final response from the MessagesState result
-def get_final_response(result):
-    """Extract the final assistant response from the agent result."""
-    assistant_messages = [msg for msg in result["messages"] if isinstance(msg, AIMessage)]
-    if assistant_messages:
-        return assistant_messages[-1].content
-    return "No response generated"
-
-# Extract language information from result
-def get_language_info(result):
-    """Extract language information from the agent result."""
-    for msg in result["messages"]:
-        if isinstance(msg, ToolMessage) and msg.tool_call_id == "language_detector" and "language_info" in msg.additional_kwargs:
-            return msg.additional_kwargs["language_info"]
-    return None
-
-# Main app layout
-st.markdown('<h1 class="main-header">AI MongoDB Assistant</h1>', unsafe_allow_html=True)
-
-# Sidebar for configuration and information
-with st.sidebar:
-    st.image("https://raw.githubusercontent.com/mongodb/mongo/master/docs/leaf.svg", width=100)
-    st.markdown("## Configuration")
-    
-    # Display current MongoDB settings
-    st.markdown("### MongoDB Settings")
-    st.text(f"Database: {config.mongodb.database}")
-    
-    # Option to change database
-    new_db = st.text_input("Change database:", config.mongodb.database)
-    if new_db != config.mongodb.database:
-        config.mongodb.database = new_db
-        st.success(f"Database changed to {new_db}")
-    
-    # Language preference
-    st.markdown("### Language Settings")
-    language_options = {
-        "auto": "Auto-detect (Default)",
-        "en": "English",
-        "es": "Spanish",
-        "fr": "French",
-        "de": "German",
-        "zh": "Chinese",
-        "ja": "Japanese",
-        "hi": "Hindi",
-        "ar": "Arabic"
-    }
-    selected_lang = st.selectbox(
-        "Preferred Language:",
-        options=list(language_options.keys()),
-        format_func=lambda x: language_options[x],
-        index=0
-    )
-    if selected_lang != st.session_state.language_preference:
-        st.session_state.language_preference = selected_lang
-        st.success(f"Language preference set to {language_options[selected_lang]}")
-    
-    # Add debug mode toggle
-    debug_mode = st.checkbox("Debug Mode", value=False)
-    
-    # Toggle to show tool messages
-    st.session_state.show_tool_messages = st.checkbox("Show Agent Thought Process", value=st.session_state.show_tool_messages)
-    
-    st.markdown("### Examples")
-    example_queries = [
-        "Hello, how are you today?",  # General conversation
-        "Show me all documents from the users collection",  # Business inquiry
-        "Find users with email containing gmail.com",  # Business inquiry
-        "Count how many documents are in the products collection",  # Business inquiry
-        "Show me the most recent 5 users",  # Business inquiry
-        "¿Puedes mostrarme los últimos 3 usuarios?",  # Spanish example
-        "Combien de produits coûtent plus de 100€?"  # French example
+# Sample data for initializing the database
+SAMPLE_DATA = {
+    "users": [
+        {"name": "Alice", "age": 28, "email": "alice@example.com", "roles": ["admin", "user"]},
+        {"name": "Bob", "age": 35, "email": "bob@example.com", "roles": ["user"]},
+        {"name": "Charlie", "age": 42, "email": "charlie@example.com", "roles": ["developer", "user"]},
+        {"name": "David", "age": 24, "email": "david@example.com", "roles": ["user"]}
+    ],
+    "products": [
+        {"name": "Laptop", "price": 999.99, "category": "Electronics", "in_stock": True},
+        {"name": "Smartphone", "price": 699.99, "category": "Electronics", "in_stock": True},
+        {"name": "Headphones", "price": 149.99, "category": "Accessories", "in_stock": False},
+        {"name": "Monitor", "price": 249.99, "category": "Electronics", "in_stock": True},
+        {"name": "Keyboard", "price": 79.99, "category": "Accessories", "in_stock": True}
+    ],
+    "orders": [
+        {"user_id": "alice@example.com", "products": ["Laptop", "Headphones"], "total": 1149.98, "date": "2023-11-15"},
+        {"user_id": "bob@example.com", "products": ["Smartphone"], "total": 699.99, "date": "2023-11-16"},
+        {"user_id": "charlie@example.com", "products": ["Monitor", "Keyboard"], "total": 329.98, "date": "2023-11-17"}
     ]
+}
+
+
+def log_debug_info(message):
+    """Add a debug log message with timestamp"""
+    timestamp = time.strftime("%H:%M:%S")
+    st.session_state.debug_logs.append(f"[{timestamp}] {message}")
+
+
+# Helper function to format JSON data for better display
+def format_json_output(content):
+    try:
+        # Check if the content is a JSON string
+        if isinstance(content, str) and (content.startswith('[') or content.startswith('{')):
+            data = json.loads(content)
+            # Format as a pretty table if it's a list of dictionaries
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                return st.json(data)
+            # Otherwise format as pretty JSON
+            return st.json(data)
+        return st.markdown(content)
+    except:
+        # If not valid JSON, just return as markdown
+        return st.markdown(content)
+
+
+# Initialize MongoDB and ChatBot
+async def initialize_chatbot():
+    log_debug_info("Initializing MongoDB connection...")
+    db_client = MongoDBClient()
+    await db_client.connect(mongodb_url)
     
-    for query in example_queries:
-        if st.button(query):
-            process_query(query)
-
-# Process the stored query if needed
-if st.session_state.need_rerun and st.session_state.last_query:
-    user_query = st.session_state.last_query
+    # Set the global db reference
+    import sys
+    from mongodb import client as mongodb_client_module
+    mongodb_client_module.db = db_client.db
     
-    # Show spinner while processing
-    with st.spinner("Processing your query..."):
-        # Add user query to chat history
-        st.session_state.chat_history.append({"role": "user", "content": user_query})
-        
-        # Run the agent
-        result = run_agent(user_query)
-        
-        # Extract final response and language info
-        final_response = get_final_response(result)
-        language_info = get_language_info(result)
-        
-        # Add agent response to chat history
-        st.session_state.chat_history.append({
-            "role": "assistant", 
-            "content": final_response,
-            "language_info": language_info,
-            "full_messages": result["messages"] if debug_mode else None
-        })
-    
-    # Reset for next query
-    st.session_state.need_rerun = False
-    st.session_state.last_query = None
-
-# Display chat history
-if st.session_state.chat_history:
-    st.markdown('<h2 class="sub-header">Conversation</h2>', unsafe_allow_html=True)
-
-    for message in st.session_state.chat_history:
-        if message["role"] == "user":
-            st.markdown(f"**You:** {message['content']}")
-        else:
-            st.markdown('<div class="response-area">', unsafe_allow_html=True)
-            st.markdown(f"**AI:** {message['content']}")
-            
-            # Show language information if available
-            if message.get("language_info") and st.session_state.show_tool_messages:
-                lang_info = message["language_info"]
-                is_english = lang_info.get("is_english", True)
-                lang_name = lang_info.get("language_name", "Unknown")
-                if not is_english:
-                    st.markdown(
-                        f'<div class="language-info">Detected language: {lang_name}. Response translated accordingly.</div>',
-                        unsafe_allow_html=True
-                    )
-                    
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Display tool messages if enabled and available
-            if st.session_state.show_tool_messages and message.get("full_messages"):
-                for msg in message["full_messages"]:
-                    if isinstance(msg, ToolMessage):
-                        if msg.tool_call_id == "language_detector":
-                            # Special formatting for language detection
-                            lang_info = msg.additional_kwargs.get("language_info", {})
-                            lang_name = lang_info.get("language_name", "Unknown")
-                            is_eng = lang_info.get("is_english", True)
-                            st.markdown(
-                                f'<div class="language-info">[{msg.tool_call_id}] {msg.content}</div>',
-                                unsafe_allow_html=True
-                            )
-                        else:
-                            st.markdown(
-                                f'<div class="tool-message">[{msg.tool_call_id}] {msg.content}</div>', 
-                                unsafe_allow_html=True
-                            )
-            
-        # Add a small space between messages
-        st.markdown("")
-
-# Debug area
-if debug_mode and st.session_state.chat_history and 'result' in locals():
-    st.markdown('<h2 class="sub-header">Debug Information</h2>', unsafe_allow_html=True)
-    with st.expander("View Debug Information", expanded=False):
-        st.markdown('<div class="debug-area">', unsafe_allow_html=True)
-        
-        # Show message sequence
-        st.markdown("### Message Sequence")
-        for i, msg in enumerate(result["messages"]):
-            if isinstance(msg, HumanMessage):
-                st.markdown(f"{i}: **Human**: {msg.content}")
-            elif isinstance(msg, AIMessage):
-                st.markdown(f"{i}: **AI**: {msg.content}")
-            elif isinstance(msg, ToolMessage):
-                st.markdown(f"{i}: **Tool [{msg.tool_call_id}]**: {msg.content}")
-                
-                # Display additional kwargs for messages that have them
-                if hasattr(msg, "additional_kwargs") and msg.additional_kwargs:
-                    st.markdown("**Additional Metadata:**")
-                    # Format the metadata more nicely
-                    try:
-                        formatted_metadata = json.dumps(msg.additional_kwargs, indent=2, cls=MongoJSONEncoder)
-                        st.json(formatted_metadata)
-                    except:
-                        st.text(str(msg.additional_kwargs))
-            else:
-                st.markdown(f"{i}: **{type(msg).__name__}**: {msg.content}")
-            
-        st.markdown('</div>', unsafe_allow_html=True)
-
-# Input area - Moved to the bottom and styled better
-st.markdown('<h2 class="sub-header">Ask a Question</h2>', unsafe_allow_html=True)
-
-st.markdown('<div class="query-container">', unsafe_allow_html=True)
-st.markdown('<p class="hint-text">Ask anything in any language! You can chat casually or ask specific questions about your MongoDB data. Try questions like "How many users are in the database?" or "Show me products with price greater than 100"</p>', unsafe_allow_html=True)
-
-# Use columns for better layout
-col1, col2 = st.columns([4, 1])
-
-with col1:
-    # Use text area for more space to write longer queries
-    user_query = st.text_area(
-        "Your question:",
-        height=100,
-        placeholder="Enter your question here in any language...",
-        label_visibility="hidden",
-        key="query_input"
+    # Initialize tool registry and chatbot
+    log_debug_info("Setting up tool registry and chatbot...")
+    tool_registry = ToolRegistry()
+    chat_bot = MongoDBChatBot(
+        mongodb_client=db_client,
+        tool_registry=tool_registry,
+        openai_api_key=openai_api_key
     )
+    
+    log_debug_info("Initialization complete!")
+    return db_client, tool_registry, chat_bot
 
-with col2:
-    # Add some space to align the button vertically
-    st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🔍 Send", key="search_button", use_container_width=True):
-        if user_query:
-            process_query(user_query)
-        else:
-            st.warning("Please enter a question first.")
 
-st.markdown('</div>', unsafe_allow_html=True) 
+# Function to initialize database with sample data
+async def initialize_database():
+    log_debug_info("Starting database initialization...")
+    if not st.session_state.is_initialized:
+        db_client, tool_registry, chat_bot = await initialize_chatbot()
+        st.session_state.db_client = db_client
+        st.session_state.tool_registry = tool_registry
+        st.session_state.chat_bot = chat_bot
+        st.session_state.is_initialized = True
+    
+    # Insert sample data into collections
+    for collection_name, documents in SAMPLE_DATA.items():
+        # Drop existing collection if it exists
+        log_debug_info(f"Dropping collection: {collection_name}")
+        await st.session_state.db_client.db.drop_collection(collection_name)
+        
+        # Insert documents
+        if documents:
+            log_debug_info(f"Inserting {len(documents)} documents into {collection_name}")
+            await st.session_state.db_client.db[collection_name].insert_many(documents)
+    
+    st.session_state.has_test_data = True
+    log_debug_info("Database initialization complete!")
+    return "Database initialized with sample data for users, products, and orders collections."
+
+
+# Custom version of process_query to capture tool usage
+async def custom_process_query(user_input):
+    """Process the user input and track tool usage for debugging"""
+    log_debug_info(f"Processing query: {user_input}")
+    
+    # Original function 
+    if not st.session_state.is_initialized:
+        with st.spinner("Initializing MongoDB connection..."):
+            db_client, tool_registry, chat_bot = await initialize_chatbot()
+            st.session_state.db_client = db_client
+            st.session_state.tool_registry = tool_registry
+            st.session_state.chat_bot = chat_bot
+            st.session_state.is_initialized = True
+    
+    # Add user message to UI
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    
+    # Create a placeholder for thinking indicator and thinking content
+    thinking_placeholder = st.empty()
+    thinking_placeholder.markdown('<div class="thinking">Thinking...</div>', unsafe_allow_html=True)
+    
+    # Placeholder for tool execution indicators
+    tools_placeholder = st.empty()
+    
+    # Process the user message with the chatbot
+    log_debug_info("Sending to AI model...")
+    
+    # Apply monkey patches to track tool calls
+    original_execute = {}
+    
+    # Helper function to create logging wrapper for tools
+    async def create_execute_with_logging(tool_name, original_func):
+        async def execute_with_logging(*args, **kwargs):
+            # Log the tool call
+            log_message = f"Tool called: {tool_name} with args: {json.dumps(args[1] if len(args) > 1 else 'None')}"
+            log_debug_info(log_message)
+            
+            # Update the tools indicator in UI
+            tools_placeholder.markdown(f'<div class="tool-call">Executing: {tool_name}...</div>', unsafe_allow_html=True)
+            
+            # Execute the original function
+            result = await original_func(*args, **kwargs)
+            return result
+        return execute_with_logging
+    
+    # Apply monkey patches to all tools
+    for tool_name, tool in st.session_state.chat_bot.tool_registry._tools.items():
+        original_execute[tool_name] = tool.execute
+        tool.execute = await create_execute_with_logging(tool_name, tool.execute)
+    
+    # Capture thinking output
+    thinking_output = None
+    
+    # Override print function to capture thinking process
+    original_print = print
+    def custom_print(message, *args, **kwargs):
+        nonlocal thinking_output
+        if isinstance(message, str) and message.startswith("Thinking process:"):
+            thinking_output = message.replace("Thinking process: ", "")
+            thinking_placeholder.markdown(f'<div class="thinking">{thinking_output}</div>', unsafe_allow_html=True)
+        original_print(message, *args, **kwargs)
+    
+    # Apply print monkey patch
+    import builtins
+    builtins.print = custom_print
+    
+    try:
+        # Process the query
+        response = await st.session_state.chat_bot.process_query(user_input)
+        
+        # If we captured thinking, add it as a special message
+        if thinking_output:
+            # Add the thinking process as a special message type
+            st.session_state.messages.append({
+                "role": "thinking", 
+                "content": thinking_output
+            })
+    finally:
+        # Restore original print function
+        builtins.print = original_print
+        
+        # Remove all monkey patches
+        for tool_name, original_func in original_execute.items():
+            if tool_name in st.session_state.chat_bot.tool_registry._tools:
+                st.session_state.chat_bot.tool_registry._tools[tool_name].execute = original_func
+    
+    log_debug_info("Response received from AI model")
+    
+    # Clear the placeholders
+    thinking_placeholder.empty()
+    tools_placeholder.empty()
+    
+    # Add assistant response to UI
+    st.session_state.messages.append({"role": "assistant", "content": response})
+
+
+# Run async function in Streamlit
+def run_async_function(func, *args):
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(func(*args))
+
+
+# Layout: Two columns - main chat and sidebar
+main_col, sidebar_col = st.columns([3, 1])
+
+with main_col:
+    # App title and description
+    st.title("MongoDB AI Assistant")
+    st.markdown("Chat with your MongoDB database using natural language!")
+    
+    # Main chat interface
+    chat_container = st.container()
+    with chat_container:
+        for message in st.session_state.messages:
+            if message["role"] == "thinking":
+                # Display thinking messages with a different style
+                st.markdown(f'<div class="thinking-message">🤔 {message["content"]}</div>', unsafe_allow_html=True)
+            else:
+                # Display regular user/assistant messages
+                with st.chat_message(message["role"]):
+                    format_json_output(message["content"])
+    
+    # Debug panel (collapsible)
+    if st.session_state.show_debug:
+        with st.expander("Debug Logs", expanded=True):
+            logs_text = "\n".join(st.session_state.debug_logs[-20:])  # Show last 20 logs
+            st.code(logs_text)
+    
+    # Chat input
+    user_input = st.chat_input("Ask me about your MongoDB database...")
+    if user_input:
+        run_async_function(custom_process_query, user_input)
+        # Rerun to update UI immediately
+        st.rerun()
+
+
+# Sidebar with MongoDB info and buttons
+with sidebar_col:
+    st.header("MongoDB Connection")
+    st.write(f"Connection: {mongodb_url}")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("Clear Chat"):
+            st.session_state.messages = []
+            st.rerun()
+    
+    with col2:
+        if st.button("Load Test Data"):
+            result = run_async_function(initialize_database)
+            st.success(result)
+            # Add system message about initialization
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": "I've initialized the database with sample data. You can now query the users, products, and orders collections!"
+            })
+            time.sleep(1)
+            st.rerun()
+    
+    # Connection status
+    if st.session_state.is_initialized:
+        st.success("Connected to MongoDB")
+        if st.session_state.has_test_data:
+            st.info("Test data loaded")
+    else:
+        st.info("Not connected to MongoDB yet")
+    
+    # Debug toggle
+    st.checkbox("Show Debug Panel", key="show_debug")
+    
+    st.write("---")
+    st.markdown("## Example Queries")
+    st.markdown("- List all collections")
+    st.markdown("- Show me users older than 30")
+    st.markdown("- Count products in Electronics category")
+    st.markdown("- What's the total value of all orders?")
+    st.markdown("- Find users with admin role")
+    
+    st.write("---")
+    st.markdown("## Sample Operations")
+    if st.button("Create a new user"):
+        st.session_state.messages.append({
+            "role": "user", 
+            "content": "Insert a new user with name Eva, age 31, email eva@example.com, and roles [user, manager]"
+        })
+        st.rerun()
+    
+    if st.button("Find out-of-stock products"):
+        st.session_state.messages.append({
+            "role": "user", 
+            "content": "Find all products that are out of stock"
+        })
+        st.rerun()
+        
+
+# Clean up resources when the app is closed
+def cleanup():
+    if st.session_state.db_client:
+        run_async_function(st.session_state.db_client.close)
+
+
+# Register cleanup function
+import atexit
+atexit.register(cleanup)
