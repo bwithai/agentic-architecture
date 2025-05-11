@@ -3,8 +3,9 @@ Query Understanding Agent
 
 This agent is responsible for:
 1. Loading database schema information dynamically from MongoDB
-2. Understanding user queries
-3. Converting natural language queries into MongoDB queries
+2. Understanding user queries (already translated to English by the intent classifier)
+3. Converting natural language queries into MongoDB operations
+4. Executing MongoDB operations and returning results
 """
 
 from typing import Dict, Any, Optional, List, Union
@@ -12,14 +13,10 @@ from pydantic import Field, BaseModel as PydanticBaseModel
 from agents.base.base_agent import BaseAgent, AgentInput, AgentOutput
 from config.config import config
 from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
-from pymongo import MongoClient
 import json
-import re
+from pymongo import MongoClient
 
 
-# Define the model classes needed by mongodb_agent.py
 class MongoDBQuery(PydanticBaseModel):
     """Simple MongoDB query targeting a single collection"""
     collection: str = Field(..., description="The MongoDB collection name to query")
@@ -36,15 +33,10 @@ class ComplexQuery(PydanticBaseModel):
     description: str = Field(..., description="Description of what the complex query does")
 
 
-class MongoDBQuerySchema(PydanticBaseModel):
-    """Schema for the MongoDB query output"""
-    mongodb_query: Dict[str, Any] = Field(..., description="The MongoDB query as a JSON object with 'collection' and 'query' fields")
-    explanation: str = Field(..., description="Brief explanation of what the query does")
-
-
 class QueryUnderstandingAgent(BaseAgent):
     """
-    Agent that understands user queries and converts them to MongoDB queries.
+    Agent that understands user queries and converts them to MongoDB operations.
+    This agent receives queries already translated to English by the intent classifier.
     """
     
     def __init__(self, model_name: str = None, verbose: bool = False):
@@ -66,6 +58,8 @@ class QueryUnderstandingAgent(BaseAgent):
         # Initialize LLM and prompt
         self._initialize_components()
         self.log("Initialized Query Understanding Agent with dynamic schema fetch")
+        # Store conversation history
+        self.conversation_history = []
 
     def _load_database_schema(self) -> str:
         """Dynamically build schema information by inspecting collections and sample docs"""
@@ -80,8 +74,22 @@ class QueryUnderstandingAgent(BaseAgent):
                     field_details = []
                     for key, val in sample.items():
                         typ = type(val).__name__
-                        example = str(val)[:30] + "..." if len(str(val)) > 30 else str(val)
-                        field_details.append(f"   - {key}: {typ} (Example: {example})")
+                        
+                        # Check if the value is an array type
+                        if isinstance(val, (list, tuple)):
+                            array_type = "list" if isinstance(val, list) else "tuple"
+                            field_details.append(f"   - {key}: {typ} (Array type: {array_type})")
+                            
+                            # If array contains objects/dicts, show their structure
+                            if val and isinstance(val[0], dict):
+                                field_details.append("     Array item structure:")
+                                for sub_key, sub_val in val[0].items():
+                                    sub_typ = type(sub_val).__name__
+                                    field_details.append(f"       - {sub_key}: {sub_typ}")
+                                    
+                        else:
+                            field_details.append(f"   - {key}: {typ}")
+                            
                     schema_lines.extend(field_details)
                     
                     # Get count of documents
@@ -89,17 +97,6 @@ class QueryUnderstandingAgent(BaseAgent):
                     schema_lines.append(f"   - Total documents: {count}")
                 else:
                     schema_lines.append("   - <empty collection>")
-                    
-            # Add some examples of common MongoDB query patterns
-            schema_lines.append("\nCommon MongoDB Query Patterns:")
-            schema_lines.append("1. Find all documents in a collection: { 'collection': 'users', 'query': {}, 'limit': 10 }")
-            schema_lines.append("2. Find by exact match: { 'collection': 'users', 'query': { 'username': 'john' } }")
-            schema_lines.append("3. Find with multiple criteria: { 'collection': 'products', 'query': { 'price': { '$lt': 100 }, 'category': 'electronics' } }")
-            schema_lines.append("4. Limit results: { 'collection': 'orders', 'query': {}, 'limit': 5 }")
-            schema_lines.append("5. Sort results: { 'collection': 'products', 'query': {}, 'sort': { 'price': 1 } }")
-            schema_lines.append("6. Search by text pattern: { 'collection': 'users', 'query': { 'name': { '$regex': 'john', '$options': 'i' } } }")
-            schema_lines.append("7. Query for a range: { 'collection': 'products', 'query': { 'price': { '$gte': 10, '$lte': 50 } } }")
-            
         except Exception as e:
             self.log(f"Error loading schema details: {str(e)}")
             schema_lines.append(f"\nError loading schema details: {str(e)}")
@@ -107,180 +104,552 @@ class QueryUnderstandingAgent(BaseAgent):
         return "\n".join(schema_lines)
 
     def _initialize_components(self):
-        """Initialize the LLM and query understanding prompt"""
+        """Initialize the LLM and system prompt"""
         self.llm = ChatOpenAI(
             model=self.model_name,
             temperature=0.2,
             api_key=config.openai.api_key
         )
         
-        # We'll prepare the full system prompt during query time to avoid template variables
-        self.system_prompt_template = """You are an expert AI assistant specialized in converting natural language queries to MongoDB queries.
-
-You will receive a user's question and the current database schema. Your task is to:
-1. Analyze what data the user is looking for
-2. Identify which collection(s) are relevant
-3. Construct the appropriate MongoDB query
-4. Apply any filtering, sorting, or limiting the user specifies
-
-IMPORTANT GUIDELINES:
-- ALWAYS include a collection name in your query
-- Use proper MongoDB operators ($eq, $gt, $lt, $in, etc.) when needed
-- Add appropriate 'limit' parameters based on the user's request
-- If the user asks for "first" or "top" N items, add a 'limit' parameter with that number
-- Support regex searches for partial text matches using $regex
-- Return MULTIPLE queries if the user asks for data from multiple collections
-- Only use collections that actually exist in the database schema
-
-MULTI-COLLECTION QUERIES:
-If the user asks for data from multiple collections (e.g., "users and products"), return an ARRAY of multiple query objects, like:
-[
-  {"collection": "users", "query": {}, "limit": 3},
-  {"collection": "products", "query": {}, "limit": 3}
-]
-
-OUTPUT FORMAT:
-Return a JSON object with these fields:
-- mongodb_query: Either a single query object or an array of query objects
-- explanation: A brief explanation of what the query does
-
-Here is the schema of the database:
-{db_schema}
-
-Now, create a MongoDB query for the user's question: {query}
-"""
+        # System prompt that instructs the model how to interact with MongoDB
+        self.system_prompt = """
+        You are a MongoDB assistant that helps users interact with their MongoDB database.
+        You can translate natural language queries into MongoDB operations.
         
-        # Create a simple parser that will extract just the JSON
-        class MongoDBQueryParser(JsonOutputParser):
-            def parse(self, text):
-                # Try to extract JSON from text
-                import re
-                import json
-                
-                # Look for JSON pattern
-                json_match = re.search(r'```json\s*([\s\S]*?)\s*```|```\s*([\s\S]*?)\s*```|({[\s\S]*}|\[[\s\S]*\])', text)
-                
-                if json_match:
-                    json_str = next(group for group in json_match.groups() if group)
-                    try:
-                        return json.loads(json_str)
-                    except:
-                        # If parsing the extracted JSON fails, try to find JSON object
-                        try:
-                            return json.loads(text)
-                        except:
-                            # Fall back to simple query
-                            return {
-                                "mongodb_query": {"collection": "users", "query": {}},
-                                "explanation": "Fallback simple query for all users."
-                            }
-                else:
-                    # Try to parse the whole text as JSON
-                    try:
-                        return json.loads(text)
-                    except:
-                        # Fall back to simple query
-                        return {
-                            "mongodb_query": {"collection": "users", "query": {}},
-                            "explanation": "Fallback simple query for all users."
+        You have access to the following MongoDB collections and their schema:
+        {db_schema}
+
+        You can perform these operations:
+        - List collections
+        - Query documents with filters
+        - Insert documents
+        - Update documents
+        - Delete documents
+        - Create and list indexes
+        - Get collection schema
+        
+        When responding to user queries, you'll identify the appropriate MongoDB operation,
+        collection, and parameters needed to fulfill the request. Always try to understand
+        the user's intent and provide the most relevant data.
+        
+        Remember that queries have already been translated to English if they were originally
+        in another language, so focus on understanding the query semantics.
+        """
+        
+        # Define function descriptions to be used for function calling
+        self.functions = [
+            {
+                "name": "set_database",
+                "description": "Set the active MongoDB database",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "db_name": {
+                            "type": "string",
+                            "description": "The name of the database to connect to"
                         }
+                    },
+                    "required": ["db_name"]
+                }
+            },
+            {
+                "name": "list_collections",
+                "description": "List all collections in the current database",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "find_documents",
+                "description": "Find documents in a collection based on a query",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "collection_name": {
+                            "type": "string",
+                            "description": "The name of the collection to query"
+                        },
+                        "query": {
+                            "type": "object",
+                            "description": "MongoDB query filter in JSON format",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of documents to return"
+                        },
+                        "projection": {
+                            "type": "object",
+                            "description": "Fields to include or exclude from results"
+                        }
+                    },
+                    "required": ["collection_name"]
+                }
+            },
+            {
+                "name": "insert_document",
+                "description": "Insert a document into a collection",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "collection_name": {
+                            "type": "string",
+                            "description": "The name of the collection"
+                        },
+                        "document": {
+                            "type": "object",
+                            "description": "The document to insert"
+                        }
+                    },
+                    "required": ["collection_name", "document"]
+                }
+            },
+            {
+                "name": "update_document",
+                "description": "Update a document in a collection",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "collection_name": {
+                            "type": "string",
+                            "description": "The name of the collection"
+                        },
+                        "filter_query": {
+                            "type": "object",
+                            "description": "Query to find document to update"
+                        },
+                        "update_data": {
+                            "type": "object",
+                            "description": "New data to update document with"
+                        }
+                    },
+                    "required": ["collection_name", "filter_query", "update_data"]
+                }
+            },
+            {
+                "name": "delete_document",
+                "description": "Delete a document from a collection",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "collection_name": {
+                            "type": "string",
+                            "description": "The name of the collection"
+                        },
+                        "filter_query": {
+                            "type": "object",
+                            "description": "Query to find document to delete"
+                        }
+                    },
+                    "required": ["collection_name", "filter_query"]
+                }
+            },
+            {
+                "name": "list_indexes",
+                "description": "List indexes for a collection",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "collection_name": {
+                            "type": "string",
+                            "description": "The name of the collection"
+                        }
+                    },
+                    "required": ["collection_name"]
+                }
+            },
+            {
+                "name": "create_index",
+                "description": "Create an index on a collection",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "collection_name": {
+                            "type": "string",
+                            "description": "The name of the collection"
+                        },
+                        "field_name": {
+                            "type": "string",
+                            "description": "The field to create an index on"
+                        },
+                        "index_type": {
+                            "type": "integer",
+                            "description": "1 for ascending, -1 for descending",
+                            "enum": [1, -1]
+                        }
+                    },
+                    "required": ["collection_name", "field_name"]
+                }
+            },
+            {
+                "name": "get_collection_schema",
+                "description": "Get the schema of a collection",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "collection_name": {
+                            "type": "string",
+                            "description": "The name of the collection"
+                        },
+                        "sample_size": {
+                            "type": "integer",
+                            "description": "Number of documents to sample for schema inference"
+                        }
+                    },
+                    "required": ["collection_name"]
+                }
+            }
+        ]
+
+    def set_database(self, db_name):
+        """Set the active database"""
+        self.db = self.client[db_name]
+        self.db_schema = self._load_database_schema()
+        return f"Connected to database: {db_name}"
+    
+    def list_collections(self):
+        """List all collections in the current database"""
+        if not self.db:
+            return "No database selected. Use 'set_database' first."
         
-        self.query_parser = MongoDBQueryParser()
+        collections = self.db.list_collection_names()
+        return json.dumps(collections, indent=2)
+    
+    def find_documents(self, collection_name, query=None, limit=10, projection=None):
+        """Find documents in a collection based on a query"""
+        if not self.db:
+            return "No database selected. Use 'set_database' first."
+        
+        if query is None:
+            query = {}
+            
+        if projection is None:
+            projection = {}
+            
+        collection = self.db[collection_name]
+        results = list(collection.find(query, projection).limit(limit))
+        
+        # Convert ObjectId to string for JSON serialization
+        for doc in results:
+            if '_id' in doc:
+                doc['_id'] = str(doc['_id'])
+                
+        return json.dumps(results, indent=2, default=str)
+    
+    def insert_document(self, collection_name, document):
+        """Insert a document into a collection"""
+        if not self.db:
+            return "No database selected. Use 'set_database' first."
+            
+        collection = self.db[collection_name]
+        result = collection.insert_one(document)
+        return f"Document inserted with ID: {result.inserted_id}"
+    
+    def update_document(self, collection_name, filter_query, update_data):
+        """Update a document in a collection"""
+        if not self.db:
+            return "No database selected. Use 'set_database' first."
+            
+        collection = self.db[collection_name]
+        result = collection.update_one(filter_query, {"$set": update_data})
+        return f"Matched: {result.matched_count}, Modified: {result.modified_count}"
+    
+    def delete_document(self, collection_name, filter_query):
+        """Delete a document from a collection"""
+        if not self.db:
+            return "No database selected. Use 'set_database' first."
+            
+        collection = self.db[collection_name]
+        result = collection.delete_one(filter_query)
+        return f"Deleted: {result.deleted_count} document(s)"
+    
+    def list_indexes(self, collection_name):
+        """List indexes for a collection"""
+        if not self.db:
+            return "No database selected. Use 'set_database' first."
+            
+        collection = self.db[collection_name]
+        indexes = list(collection.list_indexes())
+        return json.dumps([idx for idx in indexes], indent=2, default=str)
+    
+    def create_index(self, collection_name, field_name, index_type=1):
+        """Create an index on a collection"""
+        if not self.db:
+            return "No database selected. Use 'set_database' first."
+            
+        collection = self.db[collection_name]
+        result = collection.create_index([(field_name, index_type)])
+        return f"Index created: {result}"
+    
+    def get_collection_schema(self, collection_name, sample_size=10):
+        """Infer the schema of a collection based on sample documents"""
+        if not self.db:
+            return "No database selected. Use 'set_database' first."
+            
+        collection = self.db[collection_name]
+        sample_docs = list(collection.find().limit(sample_size))
+        
+        if not sample_docs:
+            return "No documents found in collection."
+            
+        # Simple schema inference
+        schema = {}
+        for doc in sample_docs:
+            for key, value in doc.items():
+                if key not in schema:
+                    schema[key] = []
+                value_type = type(value).__name__
+                if value_type not in schema[key]:
+                    schema[key].append(value_type)
+        
+        return json.dumps(schema, indent=2)
+    
+    async def process_query(self, user_query, language_info=None):
+        """
+        Process a natural language query using OpenAI to determine the MongoDB operation
+        
+        Args:
+            user_query (str): The user's query (already translated to English if needed)
+            language_info (dict): Optional language information from intent classifier
+        """
+        # Add user query to conversation history for context
+        self.conversation_history.append({"role": "user", "content": user_query})
+        
+        try:
+            # Create system prompt with database schema
+            filled_system_prompt = self.system_prompt.format(db_schema=self.db_schema)
+            
+            # Create message list with system prompt and conversation history
+            messages = [{"role": "system", "content": filled_system_prompt}]
+            messages.extend(self.conversation_history)
+            
+            # Get response from the model with function definitions
+            from langchain_core.messages import SystemMessage, HumanMessage
+            langchain_messages = [SystemMessage(content=filled_system_prompt)]
+            
+            # Add conversation history as LangChain message objects
+            for msg in self.conversation_history:
+                if msg["role"] == "user":
+                    langchain_messages.append(HumanMessage(content=msg["content"]))
+                # Add other message types as needed (assistant, function, etc.)
+            
+            # Call the LLM using invoke (not async in newer LangChain versions)
+            response = self.llm.invoke(
+                langchain_messages,
+                functions=self.functions,
+                function_call="auto"
+            )
+            
+            # Get the response
+            function_name = None
+            result = None
+            mongo_query_command = None
+            
+            # Check if the model wants to call a function
+            function_call = response.additional_kwargs.get('function_call')
+            if function_call:
+                function_name = function_call.get('name')
+                function_args = json.loads(function_call.get('arguments', '{}'))
+                
+                # Store the MongoDB command representation
+                if function_name == "find_documents":
+                    collection = function_args.get("collection_name")
+                    query = function_args.get("query", {})
+                    limit = function_args.get("limit", 10)
+                    projection = function_args.get("projection", {})
+                    
+                    # Create a MongoDB command string
+                    limit_str = f".limit({limit})" if limit else ""
+                    projection_str = f", {json.dumps(projection)}" if projection else ""
+                    
+                    mongo_query_command = {
+                        f"{collection}": f"db.{collection}.find({json.dumps(query)}{projection_str}){limit_str}"
+                    }
+                # Add similar representations for other MongoDB operations
+                elif function_name == "insert_document":
+                    collection = function_args.get("collection_name")
+                    document = function_args.get("document")
+                    mongo_query_command = {
+                        f"{collection}": f"db.{collection}.insertOne({json.dumps(document)})"
+                    }
+                elif function_name == "update_document":
+                    collection = function_args.get("collection_name")
+                    filter_query = function_args.get("filter_query")
+                    update_data = function_args.get("update_data")
+                    mongo_query_command = {
+                        f"{collection}": f"db.{collection}.updateOne({json.dumps(filter_query)}, {{$set: {json.dumps(update_data)}}})"
+                    }
+                elif function_name == "delete_document":
+                    collection = function_args.get("collection_name")
+                    filter_query = function_args.get("filter_query")
+                    mongo_query_command = {
+                        f"{collection}": f"db.{collection}.deleteOne({json.dumps(filter_query)})"
+                    }
+                elif function_name == "list_collections":
+                    mongo_query_command = {
+                        "admin": "db.listCollections()"
+                    }
+                elif function_name == "list_indexes":
+                    collection = function_args.get("collection_name")
+                    mongo_query_command = {
+                        f"{collection}": f"db.{collection}.getIndexes()"
+                    }
+                
+                # Call the appropriate function
+                if function_name == "set_database":
+                    result = self.set_database(function_args.get("db_name"))
+                elif function_name == "list_collections":
+                    result = self.list_collections()
+                elif function_name == "find_documents":
+                    result = self.find_documents(
+                        function_args.get("collection_name"),
+                        function_args.get("query", {}),
+                        function_args.get("limit", 10),
+                        function_args.get("projection", {})
+                    )
+                elif function_name == "insert_document":
+                    result = self.insert_document(
+                        function_args.get("collection_name"),
+                        function_args.get("document")
+                    )
+                elif function_name == "update_document":
+                    result = self.update_document(
+                        function_args.get("collection_name"),
+                        function_args.get("filter_query"),
+                        function_args.get("update_data")
+                    )
+                elif function_name == "delete_document":
+                    result = self.delete_document(
+                        function_args.get("collection_name"),
+                        function_args.get("filter_query")
+                    )
+                elif function_name == "list_indexes":
+                    result = self.list_indexes(function_args.get("collection_name"))
+                elif function_name == "create_index":
+                    result = self.create_index(
+                        function_args.get("collection_name"),
+                        function_args.get("field_name"),
+                        function_args.get("index_type", 1)
+                    )
+                elif function_name == "get_collection_schema":
+                    result = self.get_collection_schema(
+                        function_args.get("collection_name"),
+                        function_args.get("sample_size", 10)
+                    )
+                
+                # Add function result to conversation history
+                self.conversation_history.append({
+                    "role": "function",
+                    "name": function_name,
+                    "content": result
+                })
+                
+                # Create new LangChain messages for the second request
+                from langchain_core.messages import FunctionMessage
+                
+                langchain_messages = [SystemMessage(content=filled_system_prompt)]
+                for msg in self.conversation_history:
+                    if msg["role"] == "user":
+                        langchain_messages.append(HumanMessage(content=msg["content"]))
+                    elif msg["role"] == "function":
+                        langchain_messages.append(FunctionMessage(
+                            name=msg["name"],
+                            content=msg["content"]
+                        ))
+                
+                # Get a new response from OpenAI to interpret the function result
+                second_response = self.llm.invoke(langchain_messages)
+                
+                assistant_response = second_response.content
+                self.conversation_history.append({"role": "assistant", "content": assistant_response})
+                
+                # Parse the result if it's a JSON string
+                parsed_result = None
+                try:
+                    if isinstance(result, str) and (result.startswith('{') or result.startswith('[')):
+                        parsed_result = json.loads(result)
+                except json.JSONDecodeError:
+                    parsed_result = result
+                
+                return assistant_response, parsed_result, function_name, mongo_query_command
+            else:
+                # If no function call, just return the response
+                assistant_response = response.content
+                self.conversation_history.append({"role": "assistant", "content": assistant_response})
+                return assistant_response, None, None, None
+        except Exception as e:
+            self.log(f"Error processing query: {str(e)}")
+            return f"Error processing query: {str(e)}", None, None, None
     
     async def run(self, inputs: AgentInput) -> AgentOutput:
         """
-        Process user input and convert to MongoDB query.
+        Process user input and execute MongoDB operations.
+        
+        Args:
+            inputs (AgentInput): The agent inputs including query and context
         """
         query_text = inputs.query
+        language_info = inputs.context.get('language_info', {}) if inputs.context else {}
         
         if not self.db_connected:
             return AgentOutput(
                 response="Unable to process your query. The database connection is not available.",
-                data={},
+                data={
+                    "language_info": language_info
+                },
                 status="error",
                 error="MongoDB connection not established"
             )
             
         try:
-            # Extract numeric limits from the query
-            limit_patterns = {
-                "users": re.search(r'(\d+)\s+(user|users)', query_text.lower()),
-                "products": re.search(r'(\d+)\s+(product|products)', query_text.lower())
-            }
+            # Check if we have a translated query from intent classifier
+            if language_info and not language_info.get('is_english', True):
+                # Use the translated query instead of the original
+                query_to_use = language_info.get('translated_query', query_text)
+                self.log(f"Using translated query: {query_to_use}")
+            else:
+                query_to_use = query_text
             
-            limits = {}
-            for collection, match in limit_patterns.items():
-                if match:
-                    limits[collection] = int(match.group(1))
-            
-            # Also look for general limits
-            general_limit_match = re.search(r'(?:top|first|latest|recent)\s+(\d+)', query_text.lower())
-            default_limit = int(general_limit_match.group(1)) if general_limit_match else None
-            
-            # Create the complete prompt with the actual values substituted
-            system_prompt = self.system_prompt_template.format(
-                db_schema=self.db_schema,
-                query=query_text
+            # Process the query
+            response, result, function_name, mongodb_query = await self.process_query(
+                query_to_use, language_info
             )
             
-            # Create a new prompt template directly with the expanded content
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                ("human", "Please create the MongoDB query now.")
-            ])
-            
-            # Create the chain
-            chain = prompt | self.llm | self.query_parser
-            
-            # Get result from LLM - no variables to pass
-            result = await chain.ainvoke({})
-            
-            # Make sure we have both required fields
-            if "mongodb_query" not in result:
-                raise ValueError("LLM response missing 'mongodb_query' field")
-                
-            if "explanation" not in result:
-                result["explanation"] = "Generated MongoDB query based on user request."
-            
-            # Apply any detected limits if not already in query
-            mongodb_query = result["mongodb_query"]
-            
-            # If query is an array (multi-collection)
-            if isinstance(mongodb_query, list):
-                for q in mongodb_query:
-                    collection = q.get("collection", "")
-                    if collection in limits and "limit" not in q:
-                        q["limit"] = limits[collection]
-                    elif default_limit and "limit" not in q:
-                        q["limit"] = default_limit
-            # If query is a single object
-            elif isinstance(mongodb_query, dict):
-                collection = mongodb_query.get("collection", "")
-                if collection in limits and "limit" not in mongodb_query:
-                    mongodb_query["limit"] = limits[collection]
-                elif default_limit and "limit" not in mongodb_query:
-                    mongodb_query["limit"] = default_limit
-                    
-            # Log outputs
-            self.log(f"Generated MongoDB query: {json.dumps(mongodb_query)}")
-            self.log(f"Explanation: {result['explanation']}")
+            # Calculate result count if available
+            result_count = 0
+            if isinstance(result, list):
+                result_count = len(result)
+            elif isinstance(result, dict) and 'count' in result:
+                result_count = result['count']
             
             return AgentOutput(
-                response=result["explanation"],
+                response=response,
                 data={
+                    "mongodb_result": result,
+                    "function_called": function_name,
                     "mongodb_query": mongodb_query,
-                    "explanation": result["explanation"]
+                    "original_query": query_text,
+                    "result": result,
+                    "count": result_count,
+                    "status": "success",
+                    "language_info": language_info
                 },
                 status="success"
             )
         except Exception as e:
-            self.log(f"Error generating MongoDB query: {str(e)}")
+            error_msg = str(e)
+            self.log(f"Error processing MongoDB query: {error_msg}")
             return AgentOutput(
-                response="Sorry, I couldn't understand the query. Could you rephrase?",
-                data={},
+                response="Failed to process your MongoDB request",
+                data={
+                    "original_query": query_text,
+                    "error": error_msg,
+                    "status": "error",
+                    "language_info": language_info
+                },
                 status="error",
-                error=str(e)
+                error=error_msg
             )
 
     def get_description(self) -> str:
-        return "Converts natural language queries into MongoDB queries using live database schema."
+        return "Converts natural language queries into MongoDB operations and executes them using live database." 

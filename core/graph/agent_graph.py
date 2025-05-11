@@ -6,6 +6,7 @@ and query understanding agents into a coherent workflow.
 """
 
 import json
+import re
 from typing import Dict, Any
 from datetime import datetime
 from langchain.prompts import ChatPromptTemplate
@@ -89,6 +90,52 @@ async def classify_intent(state: MessagesState) -> MessagesState:
     return state
 
 
+def run_mongo_query(db, query_str):
+    """
+    Given a database `db` and a string like "users.find({'x':1}).limit(10)",
+    parse it, execute it, and return the resulting cursor or list.
+    """
+
+    # 1) Extract collection name + full chain of methods
+    m = re.match(r'^(?P<coll>\w+)\.(?P<chain>.+)$', query_str.strip())
+    if not m:
+        raise ValueError(f"Query must start with '<collection>.' but got: {query_str!r}")
+
+    coll_name = m.group('coll')
+    chain    = m.group('chain')
+
+    coll = db[coll_name]
+
+    # 2) Split chain into individual calls, e.g. ["find({'x':1})", "limit(10)"]
+    calls = re.findall(r'(\w+\([^)]*\))', chain)
+
+    # Start by executing the first call to get a cursor or result
+    obj = coll
+    for call in calls:
+        # parse method name and raw args inside parentheses
+        method_name, raw_args = re.match(r'(\w+)\((.*)\)', call).groups()
+
+        # build a Python-friendly args list
+        args = []
+        kwargs = {}
+        if raw_args.strip():
+            # If it looks like JSON (keys in quotes, etc.), use json.loads
+            # else fall back to literal_eval
+            try:
+                # wrap in [] so we can decode multiple comma‐separated args
+                decoded = json.loads(f'[{raw_args}]')
+                args = decoded
+            except json.JSONDecodeError:
+                # For simple Python literals: numbers, tuples, etc.
+                from ast import literal_eval
+                args = list(literal_eval(f'({raw_args},)'))
+
+        # dispatch to pymongo object (Collection or Cursor)
+        fn = getattr(obj, method_name)
+        obj = fn(*args, **kwargs)
+
+    return obj
+
 async def understand_query(state: MessagesState) -> MessagesState:
     """
     Node function to convert user query to MongoDB query using database schema.
@@ -117,7 +164,7 @@ async def understand_query(state: MessagesState) -> MessagesState:
         if isinstance(msg, ToolMessage) and msg.tool_call_id == "language_detector":
             language_info = msg.additional_kwargs.get("language_info", {})
             break
-    
+
     # If the language is not English and we have a translated query, use it
     if language_info and not language_info.get("is_english", True):
         query_to_process = language_info.get("translated_query", latest_message)
@@ -132,9 +179,10 @@ async def understand_query(state: MessagesState) -> MessagesState:
     
     # Store results in a tool message for format_response node
     query_result = {
-        "original_query": latest_message,
+        "original_query": query_to_process,
         "status": output.status,
-        "error": output.error
+        "error": output.error,
+        "mongodb_query": output.data.get("mongodb_query", "")
     }
     
     if output.status == "error":
@@ -149,37 +197,14 @@ async def understand_query(state: MessagesState) -> MessagesState:
     
     # Update the query result
     mongodb_query = output.data.get("mongodb_query")
-    explanation = output.data.get("explanation", "")
-    
-    query_result["mongodb_query"] = mongodb_query
-    query_result["explanation"] = explanation
-    
-    # Convert to proper JSON string if it's a dict
-    if isinstance(mongodb_query, dict):
-        mongodb_query_str = json.dumps(mongodb_query)
-    else:
-        mongodb_query_str = str(mongodb_query)
     
     query_message = ToolMessage(
-        content=f"MongoDB query: {mongodb_query_str}\nExplanation: {explanation}",
+        content=f"mongodb_query: {mongodb_query}",
         tool_call_id="query_understanding"
     )
     # Store query result in the message
     query_message.additional_kwargs = {"query_result": query_result, "language_info": language_info}
     state["messages"].append(query_message)
-    
-    # Extract limits from the user query
-    import re
-    # Look for patterns like "2 users" or "3 products"
-    limit_patterns = {
-        "users": re.search(r'(\d+)\s+(user|users)', query_to_process.lower()),
-        "products": re.search(r'(\d+)\s+(product|products)', query_to_process.lower())
-    }
-    
-    limits = {}
-    for collection, match in limit_patterns.items():
-        if match:
-            limits[collection] = int(match.group(1))
     
     # Now run the MongoDB agent to execute the query
     try:
@@ -195,89 +220,54 @@ async def understand_query(state: MessagesState) -> MessagesState:
         db_name = config.mongodb.database
         
         all_results = {}
-        collections_to_query = []
-        
-        # Handle multi-collection queries
-        if isinstance(mongodb_query, list):
-            # The query is a list of separate collection queries
-            collections_to_query = mongodb_query
-        elif isinstance(mongodb_query, dict) and 'collection' in mongodb_query and 'query' in mongodb_query:
-            # Single collection query
-            collections_to_query = [mongodb_query]
-        
-        # Handle numeric limits in the query like "first 3 users"
-        numeric_limit_match = re.search(r'(?:top|first|latest|recent)\s+(\d+)', query_to_process.lower())
-        default_limit = int(numeric_limit_match.group(1)) if numeric_limit_match else 5
+        for key, qstr in mongodb_query.items():
+            cursor = run_mongo_query(db, qstr)
+            # cursor might be a Cursor (for find/aggregate) or the direct return value
+            # of an operation (e.g. distinct())
+            # If iterable, cast to list; otherwise, keep as-is.
+            try:
+                all_results[key] = list(cursor)
+            except TypeError:
+                all_results[key] = cursor
+
+        # Print all results
+        print("All results: ", all_results)
+        input("1. Press Enter to continue...")
+        print("MongoDB query: ", mongodb_query)
+        input("2. Press Enter to continue...")
         
         # If no specific collections were identified but we mentioned users or products
-        if not collections_to_query:
-            if "user" in query_to_process.lower() or "customer" in query_to_process.lower():
-                collections_to_query.append({"collection": "users", "query": {}})
-            if "product" in query_to_process.lower() or "item" in query_to_process.lower():
-                collections_to_query.append({"collection": "products", "query": {}})
+        if isinstance(mongodb_query, dict):
+            for key, value in mongodb_query.items():
+                # value have query like this: "users.find({}).limit(10)"
+                query = value.split(".")
+                if len(query) == 3:
+                    cursor = db[query[1]].query[2]
+                    results = list(cursor)
+                    print("Results: ", results)
+                    input("2. Press Enter to continue...")
                 
-        # Last fallback - if still no collections identified, check available collections
-        if not collections_to_query:
-            available_collections = db.list_collection_names()
-            if available_collections:
-                collections_to_query.append({
-                    "collection": available_collections[0], 
-                    "query": {}
-                })
-        
-        for query_item in collections_to_query:
-            collection_name = query_item["collection"]
-            query_filter = query_item["query"]
-            
-            # Determine appropriate limit for this collection
-            query_limit = default_limit
-            
-            # Apply user-specified limits if available
-            if collection_name == "users" and "users" in limits:
-                query_limit = limits["users"]
-            elif collection_name == "products" and "products" in limits:
-                query_limit = limits["products"]
-            
-            try:
-                # Check if collection exists before querying
-                if collection_name in db.list_collection_names():
-                    # Execute the query
-                    collection = db[collection_name]
-                    cursor = collection.find(query_filter).limit(query_limit)
-                    
-                    # Convert cursor to list and handle ObjectIds and datetime objects
-                    results = []
-                    for doc in cursor:
-                        # Convert ObjectId to string for JSON serialization
-                        if "_id" in doc:
-                            doc["_id"] = str(doc["_id"])
-                        results.append(doc)
-                    
-                    all_results[collection_name] = results
-                    
-                    db_message = ToolMessage(
-                        content=f"Query executed successfully. Found {len(results)} results in collection '{collection_name}'.",
-                        tool_call_id=f"mongodb_agent_{collection_name}"
-                    )
-                    state["messages"].append(db_message)
-                else:
-                    # Collection doesn't exist
-                    all_results[collection_name] = []
-                    state["messages"].append(
-                        ToolMessage(
-                            content=f"Collection '{collection_name}' does not exist in database '{db_name}'.",
-                            tool_call_id=f"mongodb_agent_{collection_name}"
-                        )
-                    )
-            except Exception as coll_err:
-                # Handle collection-specific errors
-                state["messages"].append(
-                    ToolMessage(
-                        content=f"Error querying collection '{collection_name}': {str(coll_err)}",
-                        tool_call_id=f"mongodb_agent_{collection_name}"
-                    )
+                db_message = ToolMessage(
+                    content=f"Query executed successfully. Found {len(results)} results in collection '{key}'.",
+                    tool_call_id=f"mongodb_agent_{key}"
                 )
-                all_results[collection_name] = []
+                state["messages"].append(db_message)
+        else:
+            # Collection doesn't exist or invalid query format  
+            state["messages"].append(
+                ToolMessage(
+                    content=f"Invalid MongoDB query format: {mongodb_query}",
+                    tool_call_id="mongodb_agent_error"
+                )
+            )
+    except Exception as coll_err:
+        # Handle collection-specific errors
+        state["messages"].append(
+            ToolMessage(
+                content=f"Error executing MongoDB query: {str(coll_err)}",
+                tool_call_id="mongodb_agent_error"
+            )
+        )
         
         # Update query result with data
         query_result["multi_collection_results"] = all_results

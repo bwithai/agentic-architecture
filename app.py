@@ -1,6 +1,6 @@
 """
 Streamlit app for AI agents with MongoDB integration.
-This app provides a user-friendly interface to query MongoDB using natural language.
+This app provides a user-friendly interface to query MongoDB using natural language with multi-language support.
 """
 
 import os
@@ -65,6 +65,15 @@ st.markdown("""
         margin-bottom: 5px;
         border-left: 3px solid #4B9CD3;
     }
+    .language-info {
+        background-color: #f9f0ff;
+        padding: 10px;
+        border-radius: 5px;
+        font-size: 0.9rem;
+        margin-top: 5px;
+        margin-bottom: 5px;
+        border-left: 3px solid #9966CC;
+    }
     .query-container {
         background-color: #f8f9fa;
         padding: 20px;
@@ -97,6 +106,8 @@ if 'last_query' not in st.session_state:
     st.session_state.last_query = None
 if 'show_tool_messages' not in st.session_state:
     st.session_state.show_tool_messages = False
+if 'language_preference' not in st.session_state:
+    st.session_state.language_preference = "auto"
 
 # Custom JSON encoder for MongoDB types
 class MongoJSONEncoder(json.JSONEncoder):
@@ -148,6 +159,14 @@ def get_final_response(result):
         return assistant_messages[-1].content
     return "No response generated"
 
+# Extract language information from result
+def get_language_info(result):
+    """Extract language information from the agent result."""
+    for msg in result["messages"]:
+        if isinstance(msg, ToolMessage) and msg.tool_call_id == "language_detector" and "language_info" in msg.additional_kwargs:
+            return msg.additional_kwargs["language_info"]
+    return None
+
 # Main app layout
 st.markdown('<h1 class="main-header">AI MongoDB Assistant</h1>', unsafe_allow_html=True)
 
@@ -166,6 +185,29 @@ with st.sidebar:
         config.mongodb.database = new_db
         st.success(f"Database changed to {new_db}")
     
+    # Language preference
+    st.markdown("### Language Settings")
+    language_options = {
+        "auto": "Auto-detect (Default)",
+        "en": "English",
+        "es": "Spanish",
+        "fr": "French",
+        "de": "German",
+        "zh": "Chinese",
+        "ja": "Japanese",
+        "hi": "Hindi",
+        "ar": "Arabic"
+    }
+    selected_lang = st.selectbox(
+        "Preferred Language:",
+        options=list(language_options.keys()),
+        format_func=lambda x: language_options[x],
+        index=0
+    )
+    if selected_lang != st.session_state.language_preference:
+        st.session_state.language_preference = selected_lang
+        st.success(f"Language preference set to {language_options[selected_lang]}")
+    
     # Add debug mode toggle
     debug_mode = st.checkbox("Debug Mode", value=False)
     
@@ -178,7 +220,9 @@ with st.sidebar:
         "Show me all documents from the users collection",  # Business inquiry
         "Find users with email containing gmail.com",  # Business inquiry
         "Count how many documents are in the products collection",  # Business inquiry
-        "Show me the most recent 5 users"  # Business inquiry
+        "Show me the most recent 5 users",  # Business inquiry
+        "¿Puedes mostrarme los últimos 3 usuarios?",  # Spanish example
+        "Combien de produits coûtent plus de 100€?"  # French example
     ]
     
     for query in example_queries:
@@ -197,13 +241,15 @@ if st.session_state.need_rerun and st.session_state.last_query:
         # Run the agent
         result = run_agent(user_query)
         
-        # Extract final response and store all messages for debug
+        # Extract final response and language info
         final_response = get_final_response(result)
+        language_info = get_language_info(result)
         
         # Add agent response to chat history
         st.session_state.chat_history.append({
             "role": "assistant", 
             "content": final_response,
+            "language_info": language_info,
             "full_messages": result["messages"] if debug_mode else None
         })
     
@@ -221,16 +267,38 @@ if st.session_state.chat_history:
         else:
             st.markdown('<div class="response-area">', unsafe_allow_html=True)
             st.markdown(f"**AI:** {message['content']}")
+            
+            # Show language information if available
+            if message.get("language_info") and st.session_state.show_tool_messages:
+                lang_info = message["language_info"]
+                is_english = lang_info.get("is_english", True)
+                lang_name = lang_info.get("language_name", "Unknown")
+                if not is_english:
+                    st.markdown(
+                        f'<div class="language-info">Detected language: {lang_name}. Response translated accordingly.</div>',
+                        unsafe_allow_html=True
+                    )
+                    
             st.markdown('</div>', unsafe_allow_html=True)
             
             # Display tool messages if enabled and available
             if st.session_state.show_tool_messages and message.get("full_messages"):
                 for msg in message["full_messages"]:
                     if isinstance(msg, ToolMessage):
-                        st.markdown(
-                            f'<div class="tool-message">[{msg.tool_call_id}] {msg.content}</div>', 
-                            unsafe_allow_html=True
-                        )
+                        if msg.tool_call_id == "language_detector":
+                            # Special formatting for language detection
+                            lang_info = msg.additional_kwargs.get("language_info", {})
+                            lang_name = lang_info.get("language_name", "Unknown")
+                            is_eng = lang_info.get("is_english", True)
+                            st.markdown(
+                                f'<div class="language-info">[{msg.tool_call_id}] {msg.content}</div>',
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.markdown(
+                                f'<div class="tool-message">[{msg.tool_call_id}] {msg.content}</div>', 
+                                unsafe_allow_html=True
+                            )
             
         # Add a small space between messages
         st.markdown("")
@@ -250,6 +318,16 @@ if debug_mode and st.session_state.chat_history and 'result' in locals():
                 st.markdown(f"{i}: **AI**: {msg.content}")
             elif isinstance(msg, ToolMessage):
                 st.markdown(f"{i}: **Tool [{msg.tool_call_id}]**: {msg.content}")
+                
+                # Display additional kwargs for messages that have them
+                if hasattr(msg, "additional_kwargs") and msg.additional_kwargs:
+                    st.markdown("**Additional Metadata:**")
+                    # Format the metadata more nicely
+                    try:
+                        formatted_metadata = json.dumps(msg.additional_kwargs, indent=2, cls=MongoJSONEncoder)
+                        st.json(formatted_metadata)
+                    except:
+                        st.text(str(msg.additional_kwargs))
             else:
                 st.markdown(f"{i}: **{type(msg).__name__}**: {msg.content}")
             
@@ -259,7 +337,7 @@ if debug_mode and st.session_state.chat_history and 'result' in locals():
 st.markdown('<h2 class="sub-header">Ask a Question</h2>', unsafe_allow_html=True)
 
 st.markdown('<div class="query-container">', unsafe_allow_html=True)
-st.markdown('<p class="hint-text">Ask anything! You can chat casually or ask specific questions about your MongoDB data. Try questions like "How many users are in the database?" or "Show me products with price greater than 100"</p>', unsafe_allow_html=True)
+st.markdown('<p class="hint-text">Ask anything in any language! You can chat casually or ask specific questions about your MongoDB data. Try questions like "How many users are in the database?" or "Show me products with price greater than 100"</p>', unsafe_allow_html=True)
 
 # Use columns for better layout
 col1, col2 = st.columns([4, 1])
@@ -269,7 +347,7 @@ with col1:
     user_query = st.text_area(
         "Your question:",
         height=100,
-        placeholder="Enter your question here...",
+        placeholder="Enter your question here in any language...",
         label_visibility="hidden",
         key="query_input"
     )

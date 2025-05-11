@@ -140,11 +140,9 @@ You are a friendly, professional assistant. Respond concisely and helpfully to t
 
             # 4. Generate a chat response if appropriate (in English)
             response = ""
-            input("should we need to move forward after translate detect language: ")
             if classification == "GENERAL_CONVERSATION":
                 raw_resp = await self.response_chain.ainvoke({"query": language_info.get("original_query")})
                 response = raw_resp.strip()
-                self.log(f"Generated conversational response in {language_info.get("language_name")}: {response}")
 
             # 5. Return structured output with language info
             return AgentOutput(
