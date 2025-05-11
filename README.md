@@ -21,11 +21,17 @@ ai-agents/
 
 ## Features
 
-- **Modular Agent Architecture**: Easily extendable with new agent types
-- **LangGraph Integration**: Orchestrates agent workflows
-- **MongoDB Connectivity**: Retrieves data from MongoDB based on natural language queries
-- **Human-Friendly Responses**: Formats data into readable, conversational outputs
-
+- Connect to any MongoDB database using a standard connection URI
+- Natural language queries translated into MongoDB operations
+- Support for all common MongoDB operations:
+  - Listing collections
+  - Querying documents with filters
+  - Inserting documents
+  - Updating documents
+  - Deleting documents
+  - Creating and listing indexes
+  - Schema inference
+  
 ## Getting Started
 
 1. **Setup Environment**:
@@ -50,6 +56,27 @@ ai-agents/
    ```bash
    python main.py
    ```
+
+## Configuration
+
+The application uses the OpenAI API for natural language processing. You'll need:
+
+1. An OpenAI API key (get one at https://platform.openai.com/api-keys)
+2. A MongoDB connection string (from your MongoDB provider or local instance)
+
+## Example Commands
+
+Once the chatbot is running, you can interact with it using natural language:
+
+- "Show me all collections in this database"
+- "Find users in San Francisco"
+- "Insert a new user named John with email john@example.com"
+- "What is the schema of the products collection?"
+- "Update the email for user with id 12345 to newemail@example.com"
+- "Delete all orders with status 'cancelled'"
+- "Create an index on the email field in the users collection"
+
+Type 'exit' or 'quit' to end the session.
 
 ## Agent Flow
 
