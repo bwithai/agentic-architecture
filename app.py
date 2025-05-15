@@ -22,7 +22,6 @@ if "db_client" not in st.session_state:
     st.session_state.tool_registry = None
     st.session_state.chat_bot = None
     st.session_state.is_initialized = False
-    st.session_state.has_test_data = False
     st.session_state.debug_logs = []
     
 if "show_debug" not in st.session_state:
@@ -43,88 +42,34 @@ if not openai_api_key:
     st.error("OPENAI_API_KEY environment variable not set. Please add it to your .env file.")
     st.stop()
 
-# Custom CSS for better ChatGPT-like styling
+# Simplified CSS for professional styling
 st.markdown("""
 <style>
     .stChatMessage {
-        padding: 1rem;
-        border-radius: 10px;
-        margin-bottom: 1rem;
-    }
-    .stChatMessage[data-testid="user-message"] {
-        background-color: #f7f7f8;
-    }
-    .stChatMessage[data-testid="assistant-message"] {
-        background-color: #f0f7fb;
-    }
-    .mongo-json {
-        background-color: #f0f0f0;
-        padding: 1rem;
-        border-radius: 5px;
-        font-family: monospace;
-        overflow-x: auto;
+        border-radius: 8px;
+        margin-bottom: 0.75rem;
     }
     .thinking {
         color: #6c757d;
         font-style: italic;
-        background-color: #f8f9fa;
         padding: 0.5rem;
         border-radius: 5px;
         margin: 0.5rem 0;
-        border-left: 3px solid #17a2b8;
-    }
-    .thinking-message {
-        background-color: #f8f9fa;
-        border-left: 3px solid #17a2b8;
-        font-style: italic;
-        color: #6c757d;
+        border-left: 3px solid #4a86e8;
     }
     .tool-call {
-        background-color: #e6f3e6;
+        background-color: #f8f9fa;
         padding: 0.5rem;
         border-radius: 5px;
         margin: 0.5rem 0;
         font-family: monospace;
-        border-left: 3px solid #28a745;
-    }
-    .stButton button {
-        width: 100%;
-    }
-    .debug-panel {
-        background-color: #f6f6f6;
-        border-radius: 5px;
-        padding: 10px;
-        max-height: 200px;
-        overflow-y: auto;
+        border-left: 3px solid #4a86e8;
     }
     footer {
         visibility: hidden;
     }
 </style>
 """, unsafe_allow_html=True)
-
-# Sample data for initializing the database
-SAMPLE_DATA = {
-    "users": [
-        {"name": "Alice", "age": 28, "email": "alice@example.com", "roles": ["admin", "user"]},
-        {"name": "Bob", "age": 35, "email": "bob@example.com", "roles": ["user"]},
-        {"name": "Charlie", "age": 42, "email": "charlie@example.com", "roles": ["developer", "user"]},
-        {"name": "David", "age": 24, "email": "david@example.com", "roles": ["user"]}
-    ],
-    "products": [
-        {"name": "Laptop", "price": 999.99, "category": "Electronics", "in_stock": True},
-        {"name": "Smartphone", "price": 699.99, "category": "Electronics", "in_stock": True},
-        {"name": "Headphones", "price": 149.99, "category": "Accessories", "in_stock": False},
-        {"name": "Monitor", "price": 249.99, "category": "Electronics", "in_stock": True},
-        {"name": "Keyboard", "price": 79.99, "category": "Accessories", "in_stock": True}
-    ],
-    "orders": [
-        {"user_id": "alice@example.com", "products": ["Laptop", "Headphones"], "total": 1149.98, "date": "2023-11-15"},
-        {"user_id": "bob@example.com", "products": ["Smartphone"], "total": 699.99, "date": "2023-11-16"},
-        {"user_id": "charlie@example.com", "products": ["Monitor", "Keyboard"], "total": 329.98, "date": "2023-11-17"}
-    ]
-}
-
 
 def log_debug_info(message):
     """Add a debug log message with timestamp"""
@@ -138,10 +83,6 @@ def format_json_output(content):
         # Check if the content is a JSON string
         if isinstance(content, str) and (content.startswith('[') or content.startswith('{')):
             data = json.loads(content)
-            # Format as a pretty table if it's a list of dictionaries
-            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-                return st.json(data)
-            # Otherwise format as pretty JSON
             return st.json(data)
         return st.markdown(content)
     except:
@@ -171,32 +112,6 @@ async def initialize_chatbot():
     
     log_debug_info("Initialization complete!")
     return db_client, tool_registry, chat_bot
-
-
-# Function to initialize database with sample data
-async def initialize_database():
-    log_debug_info("Starting database initialization...")
-    if not st.session_state.is_initialized:
-        db_client, tool_registry, chat_bot = await initialize_chatbot()
-        st.session_state.db_client = db_client
-        st.session_state.tool_registry = tool_registry
-        st.session_state.chat_bot = chat_bot
-        st.session_state.is_initialized = True
-    
-    # Insert sample data into collections
-    for collection_name, documents in SAMPLE_DATA.items():
-        # Drop existing collection if it exists
-        log_debug_info(f"Dropping collection: {collection_name}")
-        await st.session_state.db_client.db.drop_collection(collection_name)
-        
-        # Insert documents
-        if documents:
-            log_debug_info(f"Inserting {len(documents)} documents into {collection_name}")
-            await st.session_state.db_client.db[collection_name].insert_many(documents)
-    
-    st.session_state.has_test_data = True
-    log_debug_info("Database initialization complete!")
-    return "Database initialized with sample data for users, products, and orders collections."
 
 
 # Custom version of process_query to capture tool usage
@@ -270,7 +185,7 @@ async def custom_process_query(user_input):
         response = await st.session_state.chat_bot.process_query(user_input)
         
         # If we captured thinking, add it as a special message
-        if thinking_output:
+        if thinking_output and st.session_state.show_debug:
             # Add the thinking process as a special message type
             st.session_state.messages.append({
                 "role": "thinking", 
@@ -305,105 +220,80 @@ def run_async_function(func, *args):
     return loop.run_until_complete(func(*args))
 
 
-# Layout: Two columns - main chat and sidebar
-main_col, sidebar_col = st.columns([3, 1])
+# App Layout
+st.title("MongoDB AI Assistant")
 
-with main_col:
-    # App title and description
-    st.title("MongoDB AI Assistant")
-    st.markdown("Chat with your MongoDB database using natural language!")
+# Sidebar with controls and information
+with st.sidebar:
+    st.header("Controls")
     
-    # Main chat interface
+    # Connection status indicator
+    if st.session_state.is_initialized:
+        st.success("✓ Connected to MongoDB")
+    else:
+        st.info("Not connected to MongoDB")
+    
+    st.divider()
+    
+    # Action buttons
+    if st.button("Clear Chat History", use_container_width=True):
+        st.session_state.messages = []
+        st.rerun()
+    
+    # Debug toggle (more discreet)
+    st.divider()
+    st.checkbox("Show Debug Information", key="show_debug")
+    
+    # Example queries
+    st.divider()
+    st.subheader("Example Queries")
+    examples = [
+        "List all collections",
+        "Show me all documents in users collection",
+        "Count documents in products collection", 
+        "Find documents with specific criteria",
+        "Create a new document"
+    ]
+    
+    for example in examples:
+        if st.button(example, key=example, use_container_width=True):
+            st.session_state.messages.append({"role": "user", "content": example})
+            run_async_function(custom_process_query, example)
+            st.rerun()
+
+# Main content area
+col1, col2 = st.columns([4, 1])
+
+with col1:
+    # Brief description
+    st.caption("Ask questions about your MongoDB database using natural language")
+    
+    # Chat container
     chat_container = st.container()
     with chat_container:
         for message in st.session_state.messages:
-            if message["role"] == "thinking":
-                # Display thinking messages with a different style
-                st.markdown(f'<div class="thinking-message">🤔 {message["content"]}</div>', unsafe_allow_html=True)
-            else:
-                # Display regular user/assistant messages
+            if message["role"] == "thinking" and st.session_state.show_debug:
+                st.info(f"🤔 {message['content']}")
+            elif message["role"] != "thinking":
                 with st.chat_message(message["role"]):
                     format_json_output(message["content"])
     
-    # Debug panel (collapsible)
-    if st.session_state.show_debug:
-        with st.expander("Debug Logs", expanded=True):
-            logs_text = "\n".join(st.session_state.debug_logs[-20:])  # Show last 20 logs
-            st.code(logs_text)
-    
     # Chat input
-    user_input = st.chat_input("Ask me about your MongoDB database...")
+    user_input = st.chat_input("Ask a question about your database...")
     if user_input:
         run_async_function(custom_process_query, user_input)
-        # Rerun to update UI immediately
         st.rerun()
 
-
-# Sidebar with MongoDB info and buttons
-with sidebar_col:
-    st.header("MongoDB Connection")
-    st.write(f"Connection: {mongodb_url}")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("Clear Chat"):
-            st.session_state.messages = []
-            st.rerun()
-    
-    with col2:
-        if st.button("Load Test Data"):
-            result = run_async_function(initialize_database)
-            st.success(result)
-            # Add system message about initialization
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": "I've initialized the database with sample data. You can now query the users, products, and orders collections!"
-            })
-            time.sleep(1)
-            st.rerun()
-    
-    # Connection status
-    if st.session_state.is_initialized:
-        st.success("Connected to MongoDB")
-        if st.session_state.has_test_data:
-            st.info("Test data loaded")
-    else:
-        st.info("Not connected to MongoDB yet")
-    
-    # Debug toggle
-    st.checkbox("Show Debug Panel", key="show_debug")
-    
-    st.write("---")
-    st.markdown("## Example Queries")
-    st.markdown("- List all collections")
-    st.markdown("- Show me users older than 30")
-    st.markdown("- Count products in Electronics category")
-    st.markdown("- What's the total value of all orders?")
-    st.markdown("- Find users with admin role")
-    
-    st.write("---")
-    st.markdown("## Sample Operations")
-    if st.button("Create a new user"):
-        st.session_state.messages.append({
-            "role": "user", 
-            "content": "Insert a new user with name Eva, age 31, email eva@example.com, and roles [user, manager]"
-        })
-        st.rerun()
-    
-    if st.button("Find out-of-stock products"):
-        st.session_state.messages.append({
-            "role": "user", 
-            "content": "Find all products that are out of stock"
-        })
-        st.rerun()
-        
+# Debug panel (only shown when enabled)
+if st.session_state.show_debug:
+    with st.expander("Debug Logs", expanded=False):
+        logs_text = "\n".join(st.session_state.debug_logs[-20:])  # Show last 20 logs
+        st.code(logs_text)
 
 # Clean up resources when the app is closed
 def cleanup():
     if st.session_state.db_client:
         run_async_function(st.session_state.db_client.close)
-
 
 # Register cleanup function
 import atexit
