@@ -3,6 +3,7 @@ Script to check MongoDB databases and collections.
 This will list all databases, collections, and document counts to help diagnose connection issues.
 """
 
+from typing import List
 import pymongo
 import os
 from dotenv import load_dotenv
@@ -81,5 +82,43 @@ def check_mongodb():
             client.close()
             print("\nMongoDB connection closed")
 
+
+def get_db_schema():
+    from config.config import config
+    """Get the schema of the database."""
+    client = pymongo.MongoClient(config.mongodb.uri, serverSelectionTimeoutMS=5000)
+    db = client[config.mongodb.database]
+    schema_lines: List[str] = [f"Database: {config.mongodb.database}", "Collections:"]
+    
+    for idx, coll_name in enumerate(db.list_collection_names(), start=1):
+        schema_lines.append(f"\n{idx}. {coll_name}")
+        sample = db[coll_name].find_one()
+        
+        if sample:
+            field_details = []
+            for key, val in sample.items():
+                typ = type(val).__name__
+                example = str(val)[:30] + "..." if len(str(val)) > 30 else str(val)
+                
+                # Check if the value is an array type
+                if isinstance(val, (list, tuple)):
+                    array_type = "list" if isinstance(val, list) else "tuple"
+                    field_details.append(f"   - {key}: {typ} (Array type: {array_type}, Example: {example})")
+                elif isinstance(val, dict):
+                    field_details.append(f"   - {key}: {typ} (JSON object, Example: {example})")
+                else:
+                    field_details.append(f"   - {key}: {typ} (Example: {example})")
+                    
+            schema_lines.extend(field_details)
+            
+            # Get count of documents
+            count = db[coll_name].count_documents({})
+            schema_lines.append(f"   - Total documents: {count}")
+        else:
+            schema_lines.append("   - <empty collection>")
+
+    return "\n".join(schema_lines)
+
 if __name__ == "__main__":
-    check_mongodb() 
+    # check_mongodb() 
+    print(get_db_schema())
