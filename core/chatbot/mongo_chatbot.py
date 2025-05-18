@@ -44,7 +44,7 @@ class MongoDBChatBot:
         
         # Initialize the LangChain ChatModel with tools
         self.llm = ChatOpenAI(
-            model="gpt-4o",
+            model=os.environ.get("OPENAI_MODEL"),
             temperature=0,
             api_key=openai_api_key,
             streaming=True
@@ -259,7 +259,7 @@ Keep responses concise and natural.
         
         # Try to extract a confidence score (float between 0-1)
         try:
-            # Strip any non-numeric characters and convert to float
+            # Strip any non-numeric characters and convert to flgoat
             confidence_text = evaluation_response.content.strip()
             # Extract the first decimal number from the response
             confidence_match = re.search(r'0\.\d+|\d+\.\d+|0|1', confidence_text)
