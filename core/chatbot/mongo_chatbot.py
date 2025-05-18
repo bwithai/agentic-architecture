@@ -11,11 +11,19 @@ import re
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
 from langchain_core.tools import Tool
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains.conversation.memory import ConversationBufferMemory
 
 from mongodb.client import MongoDBClient
 from agents.tools.registry import ToolRegistry
 from agents.utils.serialization_utils import serialize_mongodb_doc, mongodb_json_dumps
 from core.chatbot.fallback_handler import handle_fallback
+
+
+# Define message intent types as string constants
+INTENT_CASUAL_CONVERSATION = "casual_conversation"
+INTENT_DATABASE_QUERY = "database_query"
+INTENT_MIXED = "mixed"
 
 
 class MongoDBChatBot:
@@ -28,6 +36,12 @@ class MongoDBChatBot:
         self.conversation_history = []
         self.fallback_threshold = 0.6  # Confidence threshold below which to trigger fallback
         
+        # Initialize memory for conversation context
+        self.memory = ConversationBufferMemory(
+            memory_key="chat_history",
+            return_messages=True
+        )
+        
         # Initialize the LangChain ChatModel with tools
         self.llm = ChatOpenAI(
             model="gpt-4o",
@@ -37,30 +51,79 @@ class MongoDBChatBot:
         )
         
         # Define system message
-        self.system_message = SystemMessage(content="""You are a Medical expert assistant connected directly to a live MongoDB database.
+        self.system_message = SystemMessage(content="""You are a friendly, conversational Medical expert assistant connected directly to a live MongoDB database.
 You have access to tools that allow you to query and modify the database.
 When a user asks about data in the database, ALWAYS use the appropriate tools to fetch the data WITHOUT asking for confirmation first.
 
 IMPORTANT INSTRUCTIONS:
-1. When answering questions about database content, you MUST use multiple tools sequentially if needed.
+1. When answering questions about database content, use multiple tools sequentially if needed.
 2. First determine what collections exist, then query the relevant collections for the specific data.
 3. If the first tool execution doesn't provide complete information, call additional tools to get more details.
-4. NEVER stop with just high-level information (like just listing collection names) when the user is clearly asking for specific data.
-5. Always follow through with additional tool calls until you have the complete information the user requested.
-6. If after using tools you still cannot find relevant information, BE HONEST and acknowledge that you don't have the information.
+4. Follow through with additional tool calls until you have the complete information the user requested.
+5. If after using tools you still cannot find relevant information, be honest and acknowledge that you don't have the information.
 
-When processing user queries:
-1. First, start by explaining your thought process with "I'm thinking:" followed by a brief explanation of your approach
-2. Then execute the appropriate MongoDB tools, using multiple tools in sequence when needed
-3. Finally, present the results in a clear, organized format
+CONVERSATION STYLE:
+1. Be conversational, warm, and natural in your responses.
+2. Avoid robotic phrases like "I'm thinking:" or debug statements in your final responses.
+3. Present results in a clear, organized format with appropriate spacing.
+4. For medical information, be precise but explain concepts in accessible language.
 
 Always try to understand what the user is asking for and use the appropriate MongoDB tools to fulfill their request.
 When appropriate, format data as tables and provide brief explanations about the data.
-Be precise and helpful in your database operations.
 """)
         
         # Create LangChain tools from MongoDB tools
         self.langchain_tools = self._create_langchain_tools()
+        
+        # Create intent classifier
+        self.intent_classifier = self._create_intent_classifier()
+        
+        # Create conversation chain
+        self.casual_conversation_chain = self._create_casual_conversation_chain()
+    
+    def _create_intent_classifier(self):
+        """Create an intent classifier using LangChain"""
+        intent_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are an intent classifier for a medical assistant chatbot.
+Analyze the user's message and classify it into one of the following categories:
+1. casual_conversation: General greetings, small talk, personal questions, etc.
+2. database_query: Requests for data, information about medical records, etc.
+3. mixed: Contains elements of both casual conversation and requests for data
+
+Output ONLY the category name as a string, nothing else.
+"""),
+            ("human", "{query}")
+        ])
+        
+        intent_chain = intent_prompt | self.llm
+        return intent_chain
+    
+    def _create_casual_conversation_chain(self):
+        """Create a chain for handling casual conversation"""
+        casual_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a friendly, conversational medical assistant. 
+Respond to the user's message in a warm, friendly manner. 
+You can discuss general topics, provide general medical advice, and engage in casual conversation.
+Keep responses concise and natural.
+"""),
+            ("human", "{query}")
+        ])
+        
+        casual_chain = casual_prompt | self.llm
+        return casual_chain
+    
+    async def _classify_intent(self, query: str) -> str:
+        """Classify the intent of a user query"""
+        intent_result = await self.intent_classifier.ainvoke({"query": query})
+        intent_text = intent_result.content.strip().lower()
+        
+        # Validate the intent type
+        if intent_text not in [INTENT_CASUAL_CONVERSATION, INTENT_DATABASE_QUERY, INTENT_MIXED]:
+            # Default to database query if classification fails
+            print(f"Intent classification failed, got: {intent_text}")
+            return INTENT_DATABASE_QUERY
+        
+        return intent_text
     
     def _create_langchain_tools(self):
         """Create LangChain-compatible tools from MongoDB tools."""
@@ -174,6 +237,7 @@ Be precise and helpful in your database operations.
         
         On a scale of 0 to 1, how well did the assistant's response answer the user's query?
         Consider the following factors:
+        - Need: Strictly evaluating the AI assistant's response to a user need
         - Relevance: Did the response address what the user was asking about?
         - Completeness: Did the response provide all the information the user requested?
         - Accuracy: Is the information provided likely to be correct based on available data?
@@ -218,6 +282,27 @@ Be precise and helpful in your database operations.
         human_message = HumanMessage(content=query)
         self.conversation_history.append(human_message)
         
+        # Update memory with user message
+        self.memory.chat_memory.add_user_message(query)
+        
+        # Classify the intent of the query
+        intent = await self._classify_intent(query)
+        print(f"Classified intent: {intent}")
+        
+        # For casual conversation, use the specialized chain
+        if intent == INTENT_CASUAL_CONVERSATION:
+            print("Handling as casual conversation")
+            response = await self.casual_conversation_chain.ainvoke({"query": query})
+            response_text = response.content
+            
+            # Keep conversation history in sync
+            ai_message = AIMessage(content=response_text)
+            self.conversation_history.append(ai_message)
+            self.memory.chat_memory.add_ai_message(response_text)
+            
+            return response_text
+        
+        # For database queries or mixed intent, use the original tool-based approach
         # Prepare the messages for LangChain
         messages = [self.system_message] + self.conversation_history
         
@@ -421,8 +506,12 @@ If you need to call more tools, do so directly without asking for confirmation.
             if need_fallback:
                 print(f"Fallback needed. Confidence: {confidence_score}, Uncertainty detected: {uncertainty_detected}")
                 fallback_message = await handle_fallback(query, response_text, confidence_score)
+                # Store in memory
+                self.memory.chat_memory.add_ai_message(fallback_message)
                 return fallback_message
             else:
+                # Store in memory for future conversations
+                self.memory.chat_memory.add_ai_message(response_text)
                 return response_text
                 
         except Exception as e:

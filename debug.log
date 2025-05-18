@@ -1,0 +1,43 @@
+Classified intent: casual_conversationClassified intent: database_queryAI wants to call 1 toolsCalling tool: list_collectionsWith arguments: {}Tool result: [
+  {
+    "name": "users"
+  },
+  {
+    "name": "products"
+  }
+]...AI wants to call 1 toolsCalling tool: findWith arguments: {
+  "collection": "products",
+  "limit": 1
+}Tool result: [
+  {
+    "_id": "681228a21465846f72b01766",
+    "product_name": "Bali Belly",
+    "product_descript...Getting final response based on all tool results...Response confidence score: 0.9Classified intent: database_queryAI wants to call 1 toolsCalling tool: findWith arguments: {
+  "collection": "products"
+}Tool result: [
+  {
+    "_id": "681228a21465846f72b01766",
+    "product_name": "Bali Belly",
+    "product_descript...Getting final response based on all tool results...Response confidence score: 0.8Classified intent: casual_conversationClassified intent: database_queryAI wants to call 1 toolsCalling tool: list_collectionsWith arguments: {}Tool result: [
+  {
+    "name": "users"
+  },
+  {
+    "name": "products"
+  }
+]...AI wants to call 1 toolsCalling tool: findWith arguments: {
+  "collection": "products",
+  "limit": 1
+}Tool result: [
+  {
+    "_id": "681228a21465846f72b01766",
+    "product_name": "Bali Belly",
+    "product_descript...Getting final response based on all tool results...Response confidence score: 0.9Classified intent: database_queryAI wants to call 1 toolsCalling tool: findWith arguments: {
+  "collection": "products"
+}Tool result: [
+  {
+    "_id": "681228a21465846f72b01766",
+    "product_name": "Bali Belly",
+    "product_descript...Getting final response based on all tool results...Response confidence score: 0.2FALLBACK TRIGGERED: User query: list a cricket product.FALLBACK TRIGGERED: Chatbot response: I searched through the product database to find any items related to cricket. However, it seems that the current database does not contain any products specifically related to cricket. The products listed are primarily medical infusions and treatments, such as "Bali Belly" and "Basic Imboost," which are related to IV treatments and immune boosters.
+
+If you have any other questions or need information on a different topic, feel free to ask! 😊FALLBACK TRIGGERED: Confidence score: 0.2
