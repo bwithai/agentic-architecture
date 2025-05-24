@@ -6,6 +6,7 @@ from agents.tools.documents.delete_one import DeleteOneTool
 from agents.tools.documents.find import FindTool
 from agents.tools.documents.insert_one import InsertOneTool
 from agents.tools.documents.update_one import UpdateOneTool
+from agents.tools.documents.count import CountTool
 from agents.tools.indexes.create_index import CreateIndexTool
 from agents.tools.indexes.drop_index import DropIndexTool
 from agents.tools.indexes.list_indexes import ListIndexesTool
@@ -24,6 +25,7 @@ class ToolRegistry:
         self.register_tool(InsertOneTool())
         self.register_tool(UpdateOneTool())
         self.register_tool(DeleteOneTool())
+        self.register_tool(CountTool())
         self.register_tool(CreateIndexTool())
         self.register_tool(DropIndexTool())
         self.register_tool(ListIndexesTool())
