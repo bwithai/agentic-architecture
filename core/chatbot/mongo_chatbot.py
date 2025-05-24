@@ -9,7 +9,7 @@ from typing import Dict, List, Any, Optional
 import re
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage, trim_messages
 from langchain_core.tools import Tool
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.conversation.memory import ConversationBufferMemory
@@ -33,7 +33,6 @@ class MongoDBChatBot:
         """Initialize the chatbot with MongoDB and tools."""
         self.mongodb_client = mongodb_client
         self.tool_registry = tool_registry
-        self.conversation_history = []
         self.fallback_threshold = 0.6  # Confidence threshold below which to trigger fallback
         
         # Initialize memory for conversation context
@@ -44,12 +43,23 @@ class MongoDBChatBot:
         
         # Initialize the LangChain ChatModel with tools
         self.llm = ChatOpenAI(
-            model=os.environ.get("OPENAI_MODEL"),
+            model="gpt-3.5-turbo-0125",  # Latest GPT-3.5-turbo with 16k context
             temperature=0,
             api_key=openai_api_key,
             streaming=True
         )
         
+        # Initialize message trimmer for token limit management
+        # GPT-3.5-turbo-0125 has 16k context, we'll use ~12k for messages, ~4k for response
+        self.message_trimmer = trim_messages(
+            max_tokens=12000,  # Leave room for response and tool outputs
+            strategy="last",   # Keep most recent messages
+            token_counter=self.llm,  # Use actual model for accurate token counting
+            include_system=True,     # Always keep system message
+            allow_partial=False,     # Don't cut messages in half
+            start_on="human"        # Start trimming from human messages
+        )
+
         # Define system message
         self.system_message = SystemMessage(content="""You are a friendly, conversational Medical expert assistant connected directly to a live MongoDB database.
 You have access to tools that allow you to query and modify the database.
@@ -278,11 +288,7 @@ Keep responses concise and natural.
 
     async def process_query(self, query: str) -> str:
         """Process a user query and return a response."""
-        # Add user message to conversation history
-        human_message = HumanMessage(content=query)
-        self.conversation_history.append(human_message)
-        
-        # Update memory with user message
+        # Add user message to memory (single source of truth)
         self.memory.chat_memory.add_user_message(query)
         
         # Classify the intent of the query
@@ -295,18 +301,25 @@ Keep responses concise and natural.
             response = await self.casual_conversation_chain.ainvoke({"query": query})
             response_text = response.content
             
-            # Keep conversation history in sync
-            ai_message = AIMessage(content=response_text)
-            self.conversation_history.append(ai_message)
+            # Store AI response in memory
             self.memory.chat_memory.add_ai_message(response_text)
             
             return response_text
         
         # For database queries or mixed intent, use the original tool-based approach
-        # Prepare the messages for LangChain
-        messages = [self.system_message] + self.conversation_history
+        # Prepare the messages for LangChain with trimming
+        all_messages = [self.system_message] + self.memory.chat_memory.messages
         
         try:
+            # Apply message trimming to prevent token limit issues
+            try:
+                messages = self.message_trimmer.invoke(all_messages)
+                print(f"Trimmed messages from {len(all_messages)} to {len(messages)}")
+            except Exception as e:
+                print(f"Message trimming failed: {e}, using fallback")
+                # Fallback: keep system message + last 10 messages
+                messages = [self.system_message] + self.memory.chat_memory.messages[-10:]
+            
             # Get the LLM with tools
             llm_with_tools = self.llm.bind_tools(self.langchain_tools)
             
@@ -320,10 +333,11 @@ Keep responses concise and natural.
             tools_executed = 0
             MAX_TOOL_CALLS = 5  # Reasonable limit to prevent infinite loops
             tool_findings = []  # Track the results of all tool calls
+            current_messages = serialized_messages.copy()  # Track current conversation state
             
             while tools_executed < MAX_TOOL_CALLS:
                 # Get the AI response with potential tool calls
-                ai_message = await llm_with_tools.ainvoke(serialized_messages)
+                ai_message = await llm_with_tools.ainvoke(current_messages)
                 
                 # Check if the response contains a thinking process
                 if ai_message.content and "I'm thinking:" in ai_message.content:
@@ -334,7 +348,7 @@ Keep responses concise and natural.
                         thinking_text = "I'm thinking:" + thinking_parts[1].split("\n\n")[0]
                         print(f"Thinking process: {thinking_text}")
                 
-                self.conversation_history.append(ai_message)
+                current_messages.append(ai_message)
                 
                 # Check if the model wants to call tools
                 if hasattr(ai_message, 'tool_calls') and ai_message.tool_calls:
@@ -386,12 +400,12 @@ Keep responses concise and natural.
                                     # Fallback to the standard tool function
                                     tool_result = matching_tool.func(tool_args)
                                 
-                                # Add the tool result to the conversation
+                                # Add the tool result to the current conversation
                                 tool_message = ToolMessage(
                                     content=str(tool_result),
                                     tool_call_id=tool_id
                                 )
-                                self.conversation_history.append(tool_message)
+                                current_messages.append(tool_message)
                                 
                                 # Track empty or minimal results for fallback detection
                                 if (not tool_result) or tool_result == "[]" or "no content" in tool_result.lower():
@@ -422,7 +436,7 @@ Keep responses concise and natural.
                                     content=f"Error: {str(e)}",
                                     tool_call_id=tool_id
                                 )
-                                self.conversation_history.append(tool_message)
+                                current_messages.append(tool_message)
                                 empty_results_count += 1
                         else:
                             # Tool not found
@@ -432,7 +446,7 @@ Keep responses concise and natural.
                                 content=f"Error: {error_msg}",
                                 tool_call_id=tool_id
                             )
-                            self.conversation_history.append(tool_message)
+                            current_messages.append(tool_message)
                             empty_results_count += 1
                     
                     # Update the counter of tools executed
@@ -449,8 +463,7 @@ Based on the tools you've used so far, evaluate if you have fully answered the u
 Do you need to call additional tools to provide complete information? 
 If you need to call more tools, do so directly without asking for confirmation.
 """)
-                        self.conversation_history.append(evaluation_prompt)
-                        serialized_messages = self._serialize_conversation([self.system_message] + self.conversation_history)
+                        current_messages.append(evaluation_prompt)
                         # Continue the loop for another round of potential tool calls
                     else:
                         # No more tools needed or max tools reached
@@ -461,16 +474,17 @@ If you need to call more tools, do so directly without asking for confirmation.
             
             # Get a final response based on all the tool results
             print("Getting final response based on all tool results...")
-            serialized_messages = self._serialize_conversation([self.system_message] + self.conversation_history)
             
             # Add a specific instruction for the final response
             if not thinking_shown:
-                serialized_messages.append(
+                current_messages.append(
                     HumanMessage(content="Please present your findings clearly. If you haven't already, start with a brief explanation of what you did to get these results.")
                 )
             
-            final_response = await self.llm.ainvoke(serialized_messages)
-            self.conversation_history.append(final_response)
+            final_response = await self.llm.ainvoke(current_messages)
+            
+            # Store the final AI response in memory
+            self.memory.chat_memory.add_ai_message(final_response.content)
             
             # Now check if we should engage the fallback mechanism
             # Conditions for fallback:
