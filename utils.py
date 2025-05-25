@@ -6,6 +6,8 @@ from config.config import config
 
 import emails  # type: ignore
 from jinja2 import Template
+import shutil
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -72,3 +74,36 @@ def generate_fallback_email(user_query: str, chatbot_response: str, confidence_s
         },
     )
     return EmailData(html_content=html_content, subject=subject)
+
+
+def delete_pycache_folders(root_directory: str = ".") -> None:
+    """
+    Delete all __pycache__ folders recursively from the specified root directory.
+    Excludes the .venv directory to avoid breaking the virtual environment.
+    
+    Args:
+        root_directory (str): The root directory to start searching from. Defaults to current directory.
+    """
+    root_path = Path(root_directory).resolve()
+    deleted_count = 0
+    
+    logger.info(f"Starting to delete __pycache__ folders from: {root_path}")
+    
+    # Walk through all directories recursively
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        # Skip .venv directory
+        if ".venv" in dirnames:
+            dirnames.remove(".venv")
+            logger.info(f"Skipping .venv directory at: {Path(dirpath) / '.venv'}")
+            
+        # Check if __pycache__ is in the current directory's subdirectories
+        if "__pycache__" in dirnames:
+            pycache_path = Path(dirpath) / "__pycache__"
+            try:
+                shutil.rmtree(pycache_path)
+                deleted_count += 1
+                logger.info(f"Deleted: {pycache_path}")
+            except Exception as e:
+                logger.error(f"Failed to delete {pycache_path}: {e}")
+    
+    logger.info(f"Cleanup completed. Deleted {deleted_count} __pycache__ folders.")

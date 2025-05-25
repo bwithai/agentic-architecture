@@ -19,34 +19,40 @@ from agents.specialized.mongodb_agent import MongoDBChatBot
 
 # Create a class to redirect specific debug prints to a different stream
 class DebugRedirector:
-    def __init__(self, original_stdout):
+    def __init__(self, original_stdout, enable_debug=False):
         self.original_stdout = original_stdout
         self.debug_log_file = None
+        self.enable_debug = enable_debug
         
     def write(self, message):
-        # Check if this is a debug message we want to filter
-        debug_prefixes = [
-            "Getting final response",
-            "Response confidence score",
-            "AI wants to call",
-            "Calling tool",
-            "With arguments",
-            "Tool result",
-            "Thinking process",
-            "Classified intent",
-            "FALLBACK TRIGGERED",
-            "Direct execution failed"
-        ]
-        
-        # If it's a debug message we want to filter, write to debug log
-        if any(message.strip().startswith(prefix) for prefix in debug_prefixes):
-            # You could write to a log file instead
-            if self.debug_log_file is None:
-                self.debug_log_file = open("debug.log", "a", encoding="utf-8")
-            self.debug_log_file.write(message)
-            self.debug_log_file.flush()
+        # Only filter debug messages if debug is enabled
+        if self.enable_debug:
+            # Check if this is a debug message we want to filter
+            debug_prefixes = [
+                "Getting final response",
+                "Response confidence score",
+                "AI wants to call",
+                "Calling tool",
+                "With arguments",
+                "Tool result",
+                "Thinking process",
+                "Classified intent",
+                "FALLBACK TRIGGERED",
+                "Direct execution failed"
+            ]
+            
+            # If it's a debug message we want to filter, write to debug log
+            if any(message.strip().startswith(prefix) for prefix in debug_prefixes):
+                # Write to debug log file
+                if self.debug_log_file is None:
+                    self.debug_log_file = open("debug.log", "a", encoding="utf-8")
+                self.debug_log_file.write(message)
+                self.debug_log_file.flush()
+            else:
+                # Otherwise, write to original stdout
+                self.original_stdout.write(message)
         else:
-            # Otherwise, write to original stdout
+            # If debug is disabled, write everything to original stdout
             self.original_stdout.write(message)
     
     def flush(self):
@@ -57,6 +63,14 @@ class DebugRedirector:
     def close(self):
         if self.debug_log_file:
             self.debug_log_file.close()
+    
+    def enable_debug_logging(self):
+        """Enable debug logging to file."""
+        self.enable_debug = True
+    
+    def disable_debug_logging(self):
+        """Disable debug logging to file."""
+        self.enable_debug = False
 
 
 async def run_chat_bot():
@@ -120,12 +134,31 @@ def main():
     """Entry point for the application."""
     print("Starting MongoDB AI Assistant...")
     
-    # Redirect stdout to filter debug messages
+    # Redirect stdout but keep debug logging disabled by default
     original_stdout = sys.stdout
-    sys.stdout = DebugRedirector(original_stdout)
+    debug_redirector = DebugRedirector(original_stdout, enable_debug=False)
+    sys.stdout = debug_redirector
     
     try:
         asyncio.run(run_chat_bot())
+    except (KeyboardInterrupt, EOFError):
+        # User intentionally stopped the script, no need for debug logging
+        print("\nApplication stopped by user.")
+    except Exception as e:
+        # Enable debug logging only when there's an unexpected exception
+        debug_redirector.enable_debug_logging()
+        print(f"\nUnexpected error occurred: {e}")
+        print("Debug logging has been enabled and saved to debug.log")
+        
+        # Log the exception details to debug file
+        import traceback
+        if debug_redirector.debug_log_file is None:
+            debug_redirector.debug_log_file = open("debug.log", "a", encoding="utf-8")
+        debug_redirector.debug_log_file.write(f"\n{'='*50}\n")
+        debug_redirector.debug_log_file.write(f"Exception occurred: {e}\n")
+        debug_redirector.debug_log_file.write(f"Traceback:\n{traceback.format_exc()}\n")
+        debug_redirector.debug_log_file.write(f"{'='*50}\n")
+        debug_redirector.debug_log_file.flush()
     finally:
         # Restore original stdout
         if isinstance(sys.stdout, DebugRedirector):

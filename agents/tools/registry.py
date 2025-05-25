@@ -26,10 +26,10 @@ class ToolRegistry:
         
         # Register all available tools
         self.register_tool(ListCollectionsTool())
-        self.register_tool(FindTool())
-        self.register_tool(InsertOneTool())
-        self.register_tool(UpdateOneTool())
-        self.register_tool(DeleteOneTool())
+        self.register_tool(FindTool(mongodb_client))
+        self.register_tool(InsertOneTool(mongodb_client))
+        self.register_tool(UpdateOneTool(mongodb_client))
+        self.register_tool(DeleteOneTool(mongodb_client))
         self.register_tool(CountTool(mongodb_client))
         self.register_tool(CreateIndexTool())
         self.register_tool(DropIndexTool())

@@ -151,7 +151,7 @@ class FindTool(BaseTool):
             if (not results) and (is_user_search or search_mode == "fuzzy"):
                 fuzzy_filter = self._create_fuzzy_filter(original_filter)
                 results = list(
-                    db[collection]
+                    self.mongodb_client.db[collection]
                     .find(fuzzy_filter, projection)
                     .skip(skip)
                     .limit(limit)
@@ -159,13 +159,13 @@ class FindTool(BaseTool):
 
             # If still no results and it's a user search, get total count
             if not results and is_user_search:
-                total_count = db[collection].count_documents({})
+                total_count = self.mongodb_client.db[collection].count_documents({})
                 if total_count > limit:
                     # Do a full collection scan in batches
                     batch_size = 1000
                     for batch_skip in range(0, total_count, batch_size):
                         batch_results = list(
-                            db[collection]
+                            self.mongodb_client.db[collection]
                             .find(fuzzy_filter, projection)
                             .skip(batch_skip)
                             .limit(batch_size)
@@ -179,7 +179,7 @@ class FindTool(BaseTool):
             
             # Get total count for metadata
             total_count = (
-                db[collection].count_documents({})
+                self.mongodb_client.db[collection].count_documents({})
                 if is_user_search or len(results) >= limit
                 else len(results)
             )
