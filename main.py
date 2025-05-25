@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 
 from agents.tools.registry import ToolRegistry
 from mongodb.mongodb_setup import setup_mongodb
-from core.chatbot.mongo_chatbot import MongoDBChatBot
+# from core.chatbot.mongo_chatbot import MongoDBChatBot
+from agents.specialized.mongodb_agent import MongoDBChatBot
 
 # Create a class to redirect specific debug prints to a different stream
 class DebugRedirector:
@@ -87,7 +88,7 @@ async def run_chat_bot():
         return
     
     # Initialize tool registry and chatbot
-    tool_registry = ToolRegistry()
+    tool_registry = ToolRegistry(db_client)
     chat_bot = MongoDBChatBot(
         mongodb_client=db_client,
         tool_registry=tool_registry,

@@ -103,7 +103,7 @@ async def initialize_chatbot():
     
     # Initialize tool registry and chatbot
     log_debug_info("Setting up tool registry and chatbot...")
-    tool_registry = ToolRegistry()
+    tool_registry = ToolRegistry(db_client)
     chat_bot = MongoDBChatBot(
         mongodb_client=db_client,
         tool_registry=tool_registry,

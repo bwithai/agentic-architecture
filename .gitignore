@@ -1,6 +1,7 @@
 .env
 .idea
 mongo_backup
+debug_logs
 
 # Python
 __pycache__/
