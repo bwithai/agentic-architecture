@@ -11,7 +11,7 @@ from mongodb.client import MongoDBClient
 from agents.tools.registry import ToolRegistry
 from agents.base import base_agent as HelperAgent
 from agents.utils.serialization_utils import serialize_mongodb_doc, mongodb_json_dumps
-from core.chatbot.fallback_handler import handle_fallback
+from core.moderation.fallback_handler import handle_fallback
 
 # Define message intent types as string constants
 INTENT_CASUAL_CONVERSATION = "casual_conversation"
