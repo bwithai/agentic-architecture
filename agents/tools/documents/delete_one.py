@@ -1,12 +1,16 @@
 import json
 from typing import Dict, Any
 
-from mongodb.client import db
+from mongodb.client import MongoDBClient
 from agents.tools.base.tool import BaseTool, ToolResponse
 
 
 class DeleteOneTool(BaseTool):
     """Tool to delete a single document from a MongoDB collection."""
+
+    def __init__(self, mongodb_client: MongoDBClient):
+        self.mongodb_client = mongodb_client
+
     
     @property
     def name(self) -> str:
@@ -51,9 +55,7 @@ class DeleteOneTool(BaseTool):
             filter_obj = self.validate_object(params.get("filter"), "Filter")
             
             # Get MongoDB db directly from the module
-            from mongodb.client import db
-            
-            if db is None:
+            if self.mongodb_client.db is None:
                 return ToolResponse(
                     content=[{
                         "type": "text",
@@ -63,7 +65,7 @@ class DeleteOneTool(BaseTool):
                 )
             
             # Perform deletion
-            result = db[collection].delete_one(filter_obj)
+            result = self.mongodb_client.db[collection].delete_one(filter_obj)
             
             # Return success response
             return ToolResponse(

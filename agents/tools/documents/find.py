@@ -2,13 +2,16 @@ import json
 from typing import Dict, Any, Optional, List
 import re
 
-from mongodb.client import db
+from mongodb.client import MongoDBClient
 from agents.tools.base.tool import BaseTool, ToolResponse
 from agents.utils.serialization_utils import mongodb_json_dumps, serialize_mongodb_doc
 
 
 class FindTool(BaseTool):
     """Tool to query documents from a MongoDB collection."""
+
+    def __init__(self, mongodb_client: MongoDBClient):
+        self.mongodb_client = mongodb_client
     
     @property
     def name(self) -> str:
@@ -116,9 +119,7 @@ class FindTool(BaseTool):
             search_mode = params.get("search_mode", "exact")
             
             # Get MongoDB db directly from the module
-            from mongodb.client import db
-            
-            if db is None:
+            if self.mongodb_client.db is None:
                 return ToolResponse(
                     content=[{
                         "type": "text",
@@ -140,7 +141,7 @@ class FindTool(BaseTool):
             # Try exact match first
             filter_obj = original_filter
             results = list(
-                db[collection]
+                self.mongodb_client.db[collection]
                 .find(filter_obj, projection)
                 .skip(skip)
                 .limit(limit)

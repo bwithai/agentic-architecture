@@ -1,13 +1,16 @@
 import json
 from typing import Dict, Any
 
-from mongodb.client import db
+from mongodb.client import MongoDBClient
 from agents.tools.base.tool import BaseTool, ToolResponse
 from agents.utils.serialization_utils import mongodb_json_dumps, serialize_mongodb_doc
 
 
 class InsertOneTool(BaseTool):
     """Tool to insert a single document into a MongoDB collection."""
+
+    def __init__(self, mongodb_client: MongoDBClient):
+        self.mongodb_client = mongodb_client
     
     @property
     def name(self) -> str:
@@ -52,9 +55,7 @@ class InsertOneTool(BaseTool):
             document = self.validate_object(params.get("document"), "Document")
             
             # Get MongoDB db directly from the module
-            from mongodb.client import db
-            
-            if db is None:
+            if self.mongodb_client.db is None:
                 return ToolResponse(
                     content=[{
                         "type": "text",
@@ -64,7 +65,7 @@ class InsertOneTool(BaseTool):
                 )
             
             # Perform insertion
-            result = db[collection].insert_one(document)
+            result = self.mongodb_client.db[collection].insert_one(document)
             
             # Return success response with serialized ObjectId
             response_data = {

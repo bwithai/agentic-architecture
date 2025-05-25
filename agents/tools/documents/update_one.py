@@ -1,12 +1,15 @@
 import json
 from typing import Dict, Any
 
-from mongodb.client import db
+from mongodb.client import MongoDBClient
 from agents.tools.base.tool import BaseTool, ToolResponse
 
 
 class UpdateOneTool(BaseTool):
     """Tool to update a single document in a MongoDB collection."""
+
+    def __init__(self, mongodb_client: MongoDBClient):
+        self.mongodb_client = mongodb_client
     
     @property
     def name(self) -> str:
@@ -57,9 +60,7 @@ class UpdateOneTool(BaseTool):
             update = self.validate_object(params.get("update"), "Update")
             
             # Get MongoDB db directly from the module
-            from mongodb.client import db
-            
-            if db is None:
+            if self.mongodb_client.db is None:
                 return ToolResponse(
                     content=[{
                         "type": "text",
@@ -69,7 +70,7 @@ class UpdateOneTool(BaseTool):
                 )
             
             # Perform update
-            result = db[collection].update_one(filter_obj, update)
+            result = self.mongodb_client.db[collection].update_one(filter_obj, update)
             
             # Prepare the response
             response_data = {

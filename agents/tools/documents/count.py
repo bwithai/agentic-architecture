@@ -1,13 +1,16 @@
 import json
 from typing import Dict, Any
 
-from mongodb.client import db
+from mongodb.client import MongoDBClient
 from agents.tools.base.tool import BaseTool, ToolResponse
 
 
 class CountTool(BaseTool):
     """Tool to count documents in a MongoDB collection."""
-    
+
+    def __init__(self, mongodb_client: MongoDBClient):
+        self.mongodb_client = mongodb_client
+
     @property
     def name(self) -> str:
         return "count"
@@ -54,9 +57,7 @@ class CountTool(BaseTool):
             filter_obj = params.get("filter", {})
             
             # Get MongoDB db directly from the module
-            from mongodb.client import db
-            
-            if db is None:
+            if self.mongodb_client.db is None:
                 return ToolResponse(
                     content=[{
                         "type": "text",
@@ -66,7 +67,7 @@ class CountTool(BaseTool):
                 )
             
             # Execute count
-            count = db[collection].count_documents(filter_obj)
+            count = self.mongodb_client.db[collection].count_documents(filter_obj)
             
             # Return success response
             return ToolResponse(
