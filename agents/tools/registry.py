@@ -14,6 +14,7 @@ from agents.tools.documents.count import CountTool
 from agents.tools.indexes.create_index import CreateIndexTool
 from agents.tools.indexes.drop_index import DropIndexTool
 from agents.tools.indexes.list_indexes import ListIndexesTool
+from agents.tools.patient.create_patient_profile import CreatePatientProfileTool
 
 
 class ToolRegistry:
@@ -34,6 +35,7 @@ class ToolRegistry:
         self.register_tool(CreateIndexTool())
         self.register_tool(DropIndexTool())
         self.register_tool(ListIndexesTool())
+        self.register_tool(CreatePatientProfileTool(mongodb_client))
     
     def register_tool(self, tool: BaseTool) -> None:
         """
@@ -161,14 +163,10 @@ class ToolRegistry:
             required = []
             
             if mongo_tool.input_schema and mongo_tool.input_schema.get("properties"):
-                for name, prop in mongo_tool.input_schema.get("properties", {}).items():
-                    properties[name] = {
-                        "type": prop.get("type", "string"),
-                        "description": prop.get("description", "")
-                    }
-                    
-                    if name in mongo_tool.input_schema.get("required", []):
-                        required.append(name)
+                import copy
+                # Use the entire properties section from the tool's schema
+                properties = copy.deepcopy(mongo_tool.input_schema.get("properties", {}))
+                required = mongo_tool.input_schema.get("required", [])
             
             # Create a valid schema with type:object
             schema = {

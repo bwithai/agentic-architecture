@@ -5,6 +5,28 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 from agents.utils.serialization_utils import serialize_mongodb_doc
 
+def _create_patient_profile_chain(llm):
+    """Create a chain for handling patient profile creation"""
+    patient_profile_prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are a medical expert, patient come to you for treatment assest the patient and collect the following information:
+
+**CONVERSATION APPROACH:**
+- Start with a warm, natural greeting
+- Ask about symptoms in a caring, conversational way
+- Listen actively and respond empathetically
+- Ask follow-up questions naturally
+- Collect information gradually through conversation
+         
+**INFORMATION TO GATHER (naturally through conversation):**
+1. **Symptoms**: What they're experiencing, where, how long, severity
+2. **Basic Info**: Name, age, gender, contact details
+3. **Additional**: Any other symptoms or concerns
+        """),
+        ("human", "{query}")
+    ])
+    patient_profile_chain = patient_profile_prompt | llm
+    return patient_profile_chain
+
 def _create_intent_classifier(llm):
     """Create an intent classifier using LangChain"""
     intent_prompt = ChatPromptTemplate.from_messages([
