@@ -443,7 +443,7 @@ class MedicalExpertAgent:
     
     def start_conversation(self) -> str:
         """Start the conversation with a warm, doctor-like greeting"""
-        greeting = """Hello! I'm Dr. Sarah Mitchell, and I'm so glad you're here today. *warm smile* 
+        greeting = """Hello! I'm Dr. Sanaullah, and I'm so glad you're here today. *warm smile* 
 
 I want you to feel completely comfortable sharing what's brought you in. I believe in taking the time to really get to know my patients as people first - your name, a bit about you, and then we'll explore what's concerning you.
 
