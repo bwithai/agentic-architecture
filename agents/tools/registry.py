@@ -15,6 +15,7 @@ from agents.tools.indexes.create_index import CreateIndexTool
 from agents.tools.indexes.drop_index import DropIndexTool
 from agents.tools.indexes.list_indexes import ListIndexesTool
 from agents.tools.patient.create_patient_profile import CreatePatientProfileTool
+from agents.tools.patient.get_patient import GetPatientTool
 
 
 class ToolRegistry:
@@ -36,6 +37,7 @@ class ToolRegistry:
         self.register_tool(DropIndexTool())
         self.register_tool(ListIndexesTool())
         self.register_tool(CreatePatientProfileTool(mongodb_client))
+        self.register_tool(GetPatientTool(mongodb_client))
     
     def register_tool(self, tool: BaseTool) -> None:
         """

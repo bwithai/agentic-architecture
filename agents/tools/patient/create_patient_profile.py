@@ -1,14 +1,13 @@
-import json
+from typing import Dict, Any, List, Optional
 from datetime import datetime
-from typing import Dict, Any
 
 from mongodb.client import MongoDBClient
-from agents.tools.base.tool import BaseTool, ToolResponse
-from agents.utils.serialization_utils import mongodb_json_dumps
+from agents.tools.base.tool import BaseTool, ToolResponse, ChatBotError, ErrorCode
+from agents.utils.serialization_utils import serialize_mongodb_doc
 
 
 class CreatePatientProfileTool(BaseTool):
-    """Tool to create a patient profile and insert it into MongoDB."""
+    """Tool to create a new patient profile in the patients collection."""
 
     def __init__(self, mongodb_client: MongoDBClient):
         self.mongodb_client = mongodb_client
@@ -19,7 +18,7 @@ class CreatePatientProfileTool(BaseTool):
     
     @property
     def description(self) -> str:
-        return "Create a new patient profile with collected information and insert it into the patients collection"
+        return "Create a new patient profile with basic information and medical data."
     
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -32,116 +31,67 @@ class CreatePatientProfileTool(BaseTool):
                 },
                 "age": {
                     "type": "integer",
-                    "description": "Patient's age"
+                    "description": "Patient's age in years",
+                    "minimum": 0,
+                    "maximum": 150
                 },
                 "gender": {
                     "type": "string",
-                    "description": "Patient's gender (male/female/other)"
-                },
-                "contact_info": {
-                    "type": "object",
-                    "description": "Contact information including phone and email",
-                    "properties": {
-                        "phone": {"type": "string"},
-                        "email": {"type": "string"}
-                    }
+                    "description": "Patient's gender (Male/Female/Other)"
                 },
                 "symptoms": {
                     "type": "array",
-                    "description": "List of current symptoms",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "description": {"type": "string", "description": "Description of the symptom"},
-                            "location": {"type": "string", "description": "Location of the symptom (optional)"},
-                            "duration": {"type": "string", "description": "How long the symptom has been present"},
-                            "severity": {"type": "string", "description": "Severity level of the symptom"}
-                        },
-                        "required": ["description"]
-                    }
+                    "items": {"type": "string"},
+                    "description": "List of symptoms",
+                    "default": []
                 },
                 "medical_history": {
                     "type": "array",
-                    "description": "List of past medical conditions",
-                    "items": {
-                        "type": "string",
-                        "description": "A medical condition from patient's history"
-                    }
+                    "items": {"type": "string"},
+                    "description": "List of medical history items",
+                    "default": []
                 },
-                "allergies": {
+                "medications": {
                     "type": "array",
-                    "description": "List of known allergies",
-                    "items": {
-                        "type": "string",
-                        "description": "An allergy the patient has"
-                    }
-                },
-                "current_medications": {
-                    "type": "array",
+                    "items": {"type": "string"},
                     "description": "List of current medications",
-                    "items": {
-                        "type": "string",
-                        "description": "A medication the patient is currently taking"
-                    }
+                    "default": []
+                },
+                "additional_info": {
+                    "type": "object",
+                    "description": "Additional medical information as key-value pairs",
+                    "default": {}
                 },
                 "chat_history": {
                     "type": "array",
-                    "description": "Chat conversation history",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "user": {"type": "string", "description": "User message"},
-                            "bot": {"type": "string", "description": "Bot response"}
-                        },
-                        "required": ["user", "bot"]
-                    }
+                    "items": {"type": "object"},
+                    "description": "Chat history with medical expert",
+                    "default": []
                 }
             },
-            "required": ["name", "age", "gender"]
+            "required": ["name"]
         }
-    
+
     async def execute(self, params: Dict[str, Any]) -> ToolResponse:
         """
-        Create a patient profile and insert it into MongoDB.
+        Create a new patient profile.
         
         Args:
-            params: Patient information including name, age, gender, etc.
+            params: Dictionary containing patient information
                 
         Returns:
-            ToolResponse with the insertion result
+            ToolResponse with the created patient document
         """
         try:
-            # Validate required parameters
+            # Validate required fields
             name = params.get("name")
             if not name or not isinstance(name, str):
-                raise ValueError("Name is required and must be a string")
+                raise ChatBotError(
+                    ErrorCode.InvalidRequest,
+                    "Patient name is required and must be a string"
+                )
             
-            age = params.get("age")
-            if age is None or not isinstance(age, int):
-                raise ValueError("Age is required and must be an integer")
-            
-            gender = params.get("gender")
-            if not gender or not isinstance(gender, str):
-                raise ValueError("Gender is required and must be a string")
-            
-            # Create the patient document with default structure
-            patient_document = {
-                "name": name,
-                "age": age,
-                "gender": gender.lower(),
-                "contact_info": params.get("contact_info", {}),
-                "symptoms": params.get("symptoms", []),
-                "medical_history": params.get("medical_history", []),
-                "allergies": params.get("allergies", []),
-                "current_medications": params.get("current_medications", []),
-                "diagnosis": "",
-                "suggested_treatment": [],
-                "vitals": {},
-                "chat_history": params.get("chat_history", []),
-                "timestamp": datetime.utcnow()
-            }
-            
-            # Get MongoDB db directly from the module
+            # Check MongoDB connection
             if self.mongodb_client.db is None:
                 return ToolResponse(
                     content=[{
@@ -150,28 +100,64 @@ class CreatePatientProfileTool(BaseTool):
                     }],
                     is_error=True
                 )
-            
-            # Insert the patient profile into the patients collection
-            result = self.mongodb_client.db["patients"].insert_one(patient_document)
-            
-            # Return success response with patient ID
-            response_data = {
-                "success": True,
-                "message": f"Patient profile created successfully for {name}",
-                "patient_id": str(result.inserted_id),
-                "patient_name": name,
-                "patient_age": age,
-                "patient_gender": gender
+
+            # Create patient document based on patient_template structure
+            patient_document = {
+                "name": name.strip(),
+                "age": params.get("age"),
+                "gender": params.get("gender", ""),
+                "symptoms": params.get("symptoms", []),
+                "medical_history": params.get("medical_history", []),
+                "medications": params.get("medications", []),
+                "additional_info": params.get("additional_info", {}),
+                "chat_history": params.get("chat_history", []),
+                "timestamp": datetime.now(),
+                "completion_notified": False,
+                "qa_pairs_count": 0,
+                "extraction_performed": False
             }
+            
+            # Insert into patients collection
+            collection = self.mongodb_client.db["patients"]
+            result = collection.insert_one(patient_document)
+            
+            # Get the inserted document
+            inserted_patient = collection.find_one({"_id": result.inserted_id})
+            
+            # Serialize the document to handle MongoDB types
+            serialized_patient = serialize_mongodb_doc(inserted_patient)
+            
+            # Format response data
+            response_data = {
+                "patient": serialized_patient,
+                "metadata": {
+                    "patient_id": str(result.inserted_id),
+                    "collection": "patients",
+                    "operation": "create",
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+            
+            # Convert to JSON string for response
+            import json
+            response_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             
             return ToolResponse(
                 content=[{
                     "type": "text",
-                    "text": mongodb_json_dumps(response_data)
+                    "text": response_json
                 }],
-                is_error=False
+                is_error=False,
+                meta={
+                    "operation": "create_patient_profile",
+                    "patient_id": str(result.inserted_id),
+                    "patient_name": name
+                }
             )
             
-        except Exception as error:
-            print(f"Create patient profile error: {str(error)}")
-            return self.handle_error(error) 
+        except ChatBotError:
+            # Re-raise custom errors
+            raise
+        except Exception as e:
+            # Handle unexpected errors
+            return self.handle_error(e) 

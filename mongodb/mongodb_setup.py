@@ -18,10 +18,5 @@ async def setup_mongodb(db_url: str) -> MongoDBClient:
     """
     db_client = MongoDBClient()
     await db_client.connect(db_url)
-    
-    # Ensure the global db reference is set
-    from mongodb import client as mongodb_client_module
-    if mongodb_client_module.db is None:
-        mongodb_client_module.db = db_client.db
         
     return db_client 

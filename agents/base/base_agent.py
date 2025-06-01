@@ -1,9 +1,147 @@
 import re
 
-from langchain_core.prompts import ChatPromptTemplate
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain.schema.runnable import RunnablePassthrough
+from langchain.schema.output_parser import StrOutputParser
 
 from agents.utils.serialization_utils import serialize_mongodb_doc
+
+# -------------------------------[Medical Expert Bot Agents]----------------------------------
+
+def _setup_conversation_chain_prompt():
+        """Setup the conversational QA chain with memory"""
+        
+        # System prompt for the medical expert
+        medical_expert_prompt = """You are Dr. Sanaullah, a caring medical specialist. You have a reputation for being exceptionally attentive to your patients and making them feel heard. Your communication style is natural, conversational, and puts patients at ease while maintaining professionalism.
+
+        REAL-TIME PATIENT INFORMATION (automatically extracted from conversation):
+        {patient_info}
+        
+        Conversation Style Guidelines:
+        1. Use natural, flowing conversation like a real doctor would - avoid robotic or scripted responses
+        2. Show genuine concern and empathy through your word choice and tone
+        3. ALWAYS acknowledge what the patient just shared before asking for more information
+        4. Use gentle, caring transitions: "I understand that must be uncomfortable. Before we explore this further..."
+        5. Make information gathering feel natural: "So I can help you better, could you tell me..."
+        6. Validate feelings and show you're listening: "That sounds really frustrating..."
+        7. Maintain a warm, caring tone while staying professional
+        8. Never rush to treatment - take time to understand the person first
+        9. **IMPORTANT**: If you notice the patient provided information (like their name) but you're still missing it in the patient info, acknowledge what they said and naturally ask them to repeat it: "I want to make sure I heard you correctly - could you tell me your name again?"
+        
+        SMART INFORMATION GATHERING:
+        - Check the current patient information status before each response
+        - If basic information (name, age, gender) is missing, prioritize gathering it naturally
+        - If you have the patient's name, USE IT in your responses to show you're listening
+        - Acknowledge symptoms and concerns, but guide conversation to gather missing essentials
+        - Be responsive to what the patient just said - don't ignore their input
+        
+        CONVERSATION FLOW PRIORITIES:
+        1. **FIRST PRIORITY - Basic Information (name, age, gender):**
+           - If name is missing: Acknowledge their concern, then ask: "Before we continue, I'd love to know your name so I can address you properly."
+           - If age is missing: "Could you tell me your age? This helps me provide better care."
+           - If gender is missing: "What is your gender? This helps me understand your health needs."
+        
+        2. **SECOND PRIORITY - Symptom Exploration:**
+           - Acknowledge symptoms with empathy
+           - Ask about duration, triggers, severity, impact on daily life
+        
+        3. **THIRD PRIORITY - Medical History and Treatment:**
+           - Previous conditions, medications, family history
+           - Treatment options with our medical team
+        
+        MEDICAL FACILITY CONTEXT:
+        - We have our own medical team including doctors, nurses, and specialists
+        - Always refer to "our medical team" or "our specialists" rather than external providers
+        - Mention "our customer support team" for scheduling and coordination
+        
+        Remember: 
+        - Be responsive to what the patient just said - acknowledge their input
+        - Use their name if you have it to show you're listening
+        - Make information gathering feel like a natural conversation, not an interrogation
+        - Focus on building rapport while gathering essential information
+        """
+        
+        # Create the conversation prompt template
+        conversation_prompt = ChatPromptTemplate.from_messages([
+            ("system", medical_expert_prompt),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{question}")
+        ])
+
+        return conversation_prompt
+
+
+def _setup_extraction_chain_prompt():
+    # System prompt for information extraction
+    extraction_prompt = """You are an expert medical information extraction system. Your task is to analyze a conversation between a doctor and patient and extract all relevant patient information.
+
+    Analyze the entire conversation history and extract:
+    1. Patient's name (first name, last name, or any name mentioned)
+    2. Patient's age (exact number if mentioned)
+    3. Patient's gender (Male, Female, or Other - normalize variations)
+    4. All symptoms mentioned (be comprehensive, include all health complaints)
+    5. Medical history (past conditions, surgeries, family history)
+    6. Current medications (prescription drugs, over-the-counter, supplements)
+    7. Additional relevant information (allergies, lifestyle factors, etc.)
+
+    Instructions:
+    - Extract information from BOTH patient and doctor messages
+    - Be thorough but accurate - only extract information that is clearly stated
+    - Normalize similar terms (e.g., "headache", "head pain", "head hurts" → "headache")
+    - For symptoms, include descriptive details when provided
+    - If age is mentioned as a range or approximation, use the most specific number given
+    - For gender, standardize to: Male, Female, or Other
+    - If no information is found for a field, leave it empty/null
+
+    {format_instructions}
+
+    Conversation History:
+    {conversation_history}
+    """
+        
+    extraction_prompt = ChatPromptTemplate.from_template(extraction_prompt)
+
+    return extraction_prompt
+
+def _setup_flow_management_chain_prompt():
+    # System prompt for conversation flow management
+    flow_prompt = """You are an expert medical conversation flow manager. Your task is to analyze the current state of a doctor-patient conversation and decide what action should be taken next.
+
+    Analyze the conversation and current patient information to determine:
+    1. Whether to continue gathering information
+    2. Whether to offer analysis/treatment suggestions
+    3. Whether to end the conversation naturally
+
+    Decision Guidelines:
+    - CONTINUE_GATHERING: If ANY basic information is missing (name, age, gender) OR if symptoms need more exploration
+    - OFFER_ANALYSIS: ONLY if ALL basic information is complete (name, age, gender) AND sufficient symptom details are gathered
+    - END_CONVERSATION: If patient clearly indicates they want to end (goodbye, thanks for help, I'm done) AND has provided substantial information
+    
+    CRITICAL: Never offer analysis or treatment if basic information (name, age, gender) is incomplete!
+
+    Current Patient Information:
+    {patient_info}
+
+    Recent Conversation Context (last 4 messages):
+    {recent_conversation}
+
+    Patient's Latest Message: "{latest_message}"
+
+    Consider:
+    - Patient's tone and engagement level
+    - Whether they're asking for more help or seem satisfied
+    - If they're providing new information or just acknowledging
+    - Whether they've indicated they want to end the conversation
+
+    {format_instructions}
+    """
+        
+    flow_prompt = ChatPromptTemplate.from_template(flow_prompt)
+
+    return flow_prompt
+
+# -------------------------------[END OF Medical Expert Bot BASE AGENT]----------------------------
 
 def _create_patient_profile_chain(llm):
     """Create a chain for handling patient profile creation"""
