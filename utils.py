@@ -22,7 +22,7 @@ class EmailData:
 def render_email_template(*, template_name: str, context: dict[str, Any]) -> str:
     template_str = (
         Path(__file__).parent / "email-templates" / "build" / template_name
-    ).read_text()
+    ).read_text(encoding='utf-8')
     html_content = Template(template_str).render(context)
     return html_content
 
@@ -71,6 +71,30 @@ def generate_fallback_email(user_query: str, chatbot_response: str, confidence_s
             "user_query": user_query,
             "chatbot_response": chatbot_response,
             "confidence_score": confidence_score
+        },
+    )
+    return EmailData(html_content=html_content, subject=subject)
+
+
+def generate_medical_consultation_email(
+    patient_name: str, 
+    patient_id: str, 
+    user_choice_description: str, 
+    summary_content: str, 
+    timestamp: str
+) -> EmailData:
+    """Generate email for medical consultation summary"""
+    project_name = config.email.PROJECT_NAME
+    subject = f"{project_name} - Medical Consultation Summary - {patient_name}"
+    html_content = render_email_template(
+        template_name="medical_consultation_summary.html",
+        context={
+            "project_name": project_name,
+            "patient_name": patient_name,
+            "patient_id": patient_id,
+            "user_choice_description": user_choice_description,
+            "summary_content": summary_content,
+            "timestamp": timestamp
         },
     )
     return EmailData(html_content=html_content, subject=subject)
