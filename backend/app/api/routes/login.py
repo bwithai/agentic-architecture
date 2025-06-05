@@ -5,15 +5,7 @@ class Message(BaseModel):
     message: str
 
 
-router = APIRouter(prefix="/login", tags=["login"])
-
-
-@router.post(
-    "/",
-    status_code=201,
-)
-def login() -> Message:
-    return Message(message="Login successful")
+router = APIRouter(prefix="/utils", tags=["utils"])
 
 
 @router.get("/health-check/")
