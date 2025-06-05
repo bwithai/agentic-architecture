@@ -6,17 +6,108 @@ A modular architecture for building AI agents using LangGraph to query and inter
 
 ```
 ai-agents/
-├── agents/                    # Main agents directory
-│   ├── base/                 # Base classes and interfaces
-│   ├── specialized/          # Specialized agents
-│   ├── tools/                # Shared tools
-│   └── utils/                # Utility functions
-├── config/                   # Configuration files
-├── core/                     # Core functionality
-│   ├── graph/               # LangGraph implementations
-│   └── state/               # State management
-├── tests/                    # Test files
-└── main.py                   # Entry point
+\── backend
+|   app.py
+|   get_patient_example.py
+|   initial_data.py
+|   main.py
+|   main2.py
+|   poetry.lock
+|   pyproject.toml
+|   requirements.txt
+|   run_streamlit.py
+|   utils.py
+|   
++---app
+|   |   __init__.py
+|   |   
+|   +---agents
+|   |   |   mongodb_agent.py
+|   |   |   README.md
+|   |   |   requirements.txt
+|   |   |   __init__.py
+|   |   |   
+|   |   +---base
+|   |   |       base_agent.py
+|   |   |       __init__.py
+|   |   |
+|   |   +---specialized
+|   |   |       example_usage.py
+|   |   |       medical_expert_agent.py
+|   |   |       mongodb_agent.py
+|   |   |       pharmacist_agent.py
+|   |   |       pharmacist_usage_example.py
+|   |   |       __init__.py
+|   |   |
+|   |   +---tools
+|   |   |   |   registry.py
+|   |   |   |   __init__.py
+|   |   |   |
+|   |   |   +---base
+|   |   |   |       tool.py
+|   |   |   |       __init__.py
+|   |   |   |
+|   |   |   +---collection
+|   |   |   |       list_collections.py
+|   |   |   |
+|   |   |   +---documents
+|   |   |   |       count.py
+|   |   |   |       delete_one.py
+|   |   |   |       find.py
+|   |   |   |       insert_one.py
+|   |   |   |       update_one.py
+|   |   |   |
+|   |   |   +---indexes
+|   |   |   |       create_index.py
+|   |   |   |       drop_index.py
+|   |   |   |       list_indexes.py
+|   |   |   |
+|   |   |   \---patient
+|   |   |           create_patient_profile.py
+|   |   |           get_patient.py
+|   |   |           __init__.py
+|   |   |
+|   |   \---utils
+|   |           serialization_utils.py
+|   |           translation_utils.py
+|   |           __init__.py
+|   |
+|   +---api
+|   +---core
+|   |   |   config.py
+|   |   |   db.py
+|   |   |   __init__.py
+|   |   |
+|   |   +---graph
+|   |   |       agent_graph.py
+|   |   |       __init__.py
+|   |   |
+|   |   +---moderation
+|   |   |       fallback_handler.py
+|   |   |       __init__.py
+|   |   |
+|   |   +---state
+|   |   |       agent_state.py
+|   |   |       __init__.py
+|   |   |
+|   |   \---utils
+|   \---mongodb
+|           client.py
+|           mongodb_setup.py
+|           schema.py
+|           __init__.py
+|
++---email-templates
+|   \---build
+|           fallback_support.html
+|           medical_consultation_summary.html
+|           test_email.html
+|
+\---test_logics
+        check_mongodb.py
+        insert_patient_info.py
+        remove_pycache.py
+        test_imports.py
 ```
 
 ## Features
