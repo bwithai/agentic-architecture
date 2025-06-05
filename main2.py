@@ -31,7 +31,6 @@ class MedicalSystemFlow:
         load_dotenv()
 
         # Get required configuration
-        mongodb_url = os.environ.get("MONGODB_URI", "mongodb://localhost:27017/test")
         mongodb_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
         database_name = os.getenv("MONGODB_DATABASE", "default_database")
         openai_api_key = os.environ.get("OPENAI_API_KEY")
