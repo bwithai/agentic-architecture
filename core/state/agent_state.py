@@ -20,11 +20,21 @@ class AgentState(BaseModel):
     # The user's original query
     query: str = Field(default="")
     
+    # The type of query (general, product_availability, etc.)
+    query_type: str = Field(default="general")
+    
     # The structured MongoDB query derived from the natural language
     mongodb_query: Optional[Dict[str, Any]] = Field(default=None)
     
     # Results from the MongoDB query
     query_results: Optional[Dict[str, Any]] = Field(default=None)
+    
+    # Product-specific information
+    product_id: Optional[str] = Field(default=None)
+    product_availability: Optional[Dict[str, Any]] = Field(default=None)
+    
+    # Escalation information
+    escalation_status: Optional[Dict[str, Any]] = Field(default=None)
     
     # Final response to present to the user
     response: str = Field(default="")
