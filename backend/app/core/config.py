@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     EMAILS_FROM_EMAIL: str | None = None
     EMAILS_FROM_NAME: str | None = None
 
+    # Qontak CRM
+    QONTAK_INTEGRATION_ID: str | None = None
+    QONTAK_WHATSAPP_BUSINESS_ID: str | None = None
+    QONTAK_ACCESS_TOKEN: str | None = None
+    QONTAK_REFRESH_TOKEN: str | None = None
+    QONTAK_CLIENT_SECRET: str | None = None
+    QONTAK_API_BASE: str | None = "https://api.qontak.com/v1"
+
     @model_validator(mode="after")
     def _set_default_emails_from(self) -> Self:
         if not self.EMAILS_FROM_NAME:
